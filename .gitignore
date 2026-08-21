@@ -8,6 +8,7 @@ src-tauri/resources/node
 .idea
 .vscode
 *.local
+*.lnk
 .tmp
 skills
 .serena
