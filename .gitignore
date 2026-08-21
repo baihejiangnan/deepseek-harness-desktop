@@ -12,3 +12,4 @@ src-tauri/resources/node
 .tmp
 skills
 .serena
+*.lnk
