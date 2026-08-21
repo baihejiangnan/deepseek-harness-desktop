@@ -36,8 +36,8 @@ Keys, tokens, passwords, sessions, DSH Homes, Profiles, logs, caches, and local 
 
 Browse [`docs/images/preview/`](./docs/images/preview/) for the complete collection.
 
-<p align="center"><img src="./docs/images/preview/plugin-pack-download.png" width="48%" alt="Plugin pack download" /><img src="./docs/images/preview/plugin-management.png" width="48%" alt="Plugin management" /></p>
-<p align="center"><img src="./docs/images/preview/theme-options.png" width="48%" alt="Theme options" /></p>
+<p align="center"><img src="./docs/images/preview/multi-instance-parallel.png" width="48%" alt="Parallel instances" /><img src="./docs/images/preview/plugin-pack-download.png" width="48%" alt="Plugin pack download" /></p>
+<p align="center"><img src="./docs/images/preview/plugin-management.png" width="48%" alt="Plugin management" /><img src="./docs/images/preview/theme-options.png" width="48%" alt="Theme options" /></p>
 
 ## Development
 

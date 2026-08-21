@@ -36,8 +36,8 @@ API Key、Token、密码、会话、DSH Home、Profile、日志、缓存和本�
 
 完整图片位于 [`docs/images/preview/`](./docs/images/preview/)：
 
-<p align="center"><img src="./docs/images/preview/plugin-pack-download.png" width="48%" alt="插件包下载" /><img src="./docs/images/preview/plugin-management.png" width="48%" alt="插件管理" /></p>
-<p align="center"><img src="./docs/images/preview/theme-options.png" width="48%" alt="主题配色" /></p>
+<p align="center"><img src="./docs/images/preview/multi-instance-parallel.png" width="48%" alt="多实例并行运行" /><img src="./docs/images/preview/plugin-pack-download.png" width="48%" alt="插件包下载" /></p>
+<p align="center"><img src="./docs/images/preview/plugin-management.png" width="48%" alt="插件管理" /><img src="./docs/images/preview/theme-options.png" width="48%" alt="主题配色" /></p>
 
 ## 开发
 
