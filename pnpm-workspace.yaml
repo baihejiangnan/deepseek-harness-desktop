@@ -1,0 +1,14 @@
+shellEmulator: true
+
+trustPolicy: no-downgrade
+# Ignore the trust-level check for packages published more than 1 year ago.
+# Older transitive versions (e.g. semver@6.3.1, undici-types@6.21.0) predate the
+# package's adoption of trusted publishing and falsely read as a "trust downgrade".
+trustPolicyIgnoreAfter: 525600
+
+patchedDependencies:
+  bumpp: patches/bumpp.patch
+
+allowBuilds:
+  '@tailwindcss/oxide': true
+  esbuild: true

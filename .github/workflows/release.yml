@@ -1,0 +1,223 @@
+name: Build & Release
+
+on:
+  # 正式发布：推送 v* tag 触发（先由 changelogithub 生成 changelog 并创建 release，再并行打包上传产物）
+  # git tag -a v0.1.0 -m "release: DeepSeek Harness Desktop v0.1.0"
+  # git push origin v0.1.0
+  push:
+    tags:
+      - 'v*'
+  # 手动触发：支持单平台、多平台测试打包（草稿 + 预发布，不打扰正式用户）
+  workflow_dispatch:
+    inputs:
+      platform_filter:
+        description: 选择需要打包的平台 (仅在手动触发时生效)
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - macos-aarch64
+          - macos-x86_64
+          - windows
+          - linux
+
+permissions:
+  contents: write
+
+jobs:
+  # 正式发布专用：根据 commit/PR 生成 changelog 并创建 release。
+  # 需要完整 git 历史（fetch-depth: 0），避免 changelog 生成器拿不到提交记录。
+  changelog:
+    name: Generate Changelog
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Generate GitHub Changelog
+        id: changelogithub
+        run: pnpx changelogithub
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Append Artifacts section to release
+        if: steps.changelogithub.outcome == 'success'
+        run: |
+          gh release view ${{ github.ref_name }} --json body -q .body > release_notes.md
+          cat >> release_notes.md << 'EOF'
+
+             ### 📦 Artifacts
+             - **macOS (Apple Silicon)**: 下载 `aarch64.dmg`
+             - **macOS (Intel)**: 下载 `x64.dmg`
+             - **Windows**: 下载 `.exe`
+             - **Linux (x64)**: 下载 `.AppImage` 或 `.deb`（基于 Ubuntu 22.04 构建，兼容 22.04 及更新版本）
+          EOF
+          gh release edit ${{ github.ref_name }} --notes-file release_notes.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish:
+    # tag 触发时等待 changelog 生成完成再打包；手动触发时跳过 changelog 直接测试打包
+    needs: changelog
+    if: github.event_name == 'workflow_dispatch' || needs.changelog.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: macos-aarch64
+            platform: macos-latest
+            args: --target aarch64-apple-darwin
+            arch: aarch64
+          - id: macos-x86_64
+            platform: macos-latest
+            args: --target x86_64-apple-darwin
+            arch: x86_64
+          - id: windows
+            platform: windows-latest
+            args: ''
+          # Linux 打包跑在 ubuntu-22.04 而非 ubuntu-latest：
+          # 22.04 的 glibc/WebKitGTK 版本更老，产出的 .deb/.AppImage 才能在
+          # Ubuntu 22.04 及更高版本上运行；用 latest(24.04) 构建的产物会因依赖新
+          # 库而在 22.04 上装不上/跑不起来(issue #41)。
+          - id: linux
+            platform: ubuntu-22.04
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+    # 兜底：apt/网络偶发卡死时避免占用 runner 到 GitHub 默认的 6 小时上限
+    timeout-minutes: 60
+
+    steps:
+      - name: Check if this platform should run
+        id: check
+        shell: bash
+        run: |
+          # Tag 触发全部构建；手动触发时仅构建与 platform_filter 匹配的平台
+          if [ "${{ github.event_name }}" = "push" ] || \
+             [ "${{ github.event.inputs.platform_filter }}" = "all" ] || \
+             [ "${{ github.event.inputs.platform_filter }}" = "${{ matrix.id }}" ]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+            echo "平台匹配成功，开始构建..."
+          else
+            echo "should_run=false" >> $GITHUB_OUTPUT
+            echo "平台不匹配，将跳过后续构建步骤。"
+          fi
+
+      - name: Checkout repository
+        if: steps.check.outputs.should_run == 'true'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install pnpm
+        if: steps.check.outputs.should_run == 'true'
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        if: steps.check.outputs.should_run == 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install Rust stable
+        if: steps.check.outputs.should_run == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.platform == 'macos-latest' && (matrix.arch == 'aarch64' && 'aarch64-apple-darwin' || 'x86_64-apple-darwin') || '' }}
+
+      - name: Install dependencies (Ubuntu only)
+        if: steps.check.outputs.should_run == 'true' && matrix.platform == 'ubuntu-22.04'
+        run: |
+          # GitHub runner 上 apt-get update 偶发网络卡死（无输出、无超时），
+          # 加 Acquire 超时/重试 + 外层 timeout + 循环重试，避免整个 job 挂起数小时。
+          apt_ok=0
+          for i in 1 2 3; do
+            if timeout 180 sudo apt-get update \
+              -o Acquire::Retries=5 \
+              -o Acquire::http::Timeout=60 \
+              -o Acquire::https::Timeout=60 \
+              -o Acquire::ftp::Timeout=60; then
+              apt_ok=1
+              break
+            fi
+            echo "apt-get update 第 $i 次失败，10 秒后重试..."
+            sleep 10
+          done
+          [ "$apt_ok" = "1" ] || { echo "apt-get update 连续 3 次失败，中止"; exit 1; }
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install frontend dependencies
+        if: steps.check.outputs.should_run == 'true'
+        run: pnpm install --no-frozen-lockfile
+
+      # 正式发布：release 已由 changelog 任务创建，这里只上传产物。
+      # 注意：不要传 releaseBody —— tauri-action 会用它覆盖已有 release 的正文。
+      - name: Build and Release (For Tags)
+        if: steps.check.outputs.should_run == 'true' && github.event_name == 'push'
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_BUNDLE_TARGETS: ${{ matrix.platform == 'ubuntu-22.04' && 'appimage,deb' || 'all' }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'DeepSeek Harness Desktop ${{ github.ref_name }}'
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
+          args: ${{ matrix.args }}
+
+      # 手动触发：单平台/全平台测试打包（草稿 + 预发布，不打扰正式用户）
+      - name: Build and Create Test Release (For Manual Trigger)
+        if: steps.check.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch'
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_BUNDLE_TARGETS: ${{ matrix.platform == 'ubuntu-22.04' && 'appimage,deb' || 'all' }}
+        with:
+          tagName: ${{ format('test-{0}-{1}', github.ref_name, github.run_number) }}
+          releaseName: 'DeepSeek Harness Desktop 手动测试版 (构建 #${{ github.run_number }})'
+          releaseBody: |
+            DeepSeek Harness Desktop 手动触发的单平台/全平台测试构建。
+            触发分支: `${{ github.ref_name }}`
+            打包平台: `${{ github.event.inputs.platform_filter }}`
+          prerelease: true
+          args: ${{ matrix.args }}
+
+      - name: Upload Artifacts (For Manual Trigger)
+        if: steps.check.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v6
+        with:
+          name: deepseek-harness-desktop-${{ matrix.id }}
+          path: |
+            src-tauri/target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/deb/*.deb
+          retention-days: 7

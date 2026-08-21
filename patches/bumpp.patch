@@ -1,0 +1,97 @@
+diff --git a/dist/config-uYUPRhMz.mjs b/dist/config-uYUPRhMz.mjs
+index 8faa393..0b3d58b 100644
+--- a/dist/config-uYUPRhMz.mjs
++++ b/dist/config-uYUPRhMz.mjs
+@@ -6304,6 +6304,9 @@ async function updateFile(relPath, operation) {
+ 		case "jsr.jsonc":
+ 		case "deno.json":
+ 		case "deno.jsonc": return updateManifestFile(relPath, operation);
++		case "tauri.conf.json": return updateManifestFile(relPath, operation);
++		case "cargo.toml": return updateCargoToml(relPath, operation);
++		case "cargo.lock": return updateCargoLock(relPath, operation);
+ 		default: return updateTextFile(relPath, operation);
+ 	}
+ }
+@@ -6320,7 +6323,9 @@ async function updateManifestFile(relPath, operation) {
+ 	const { newVersion } = operation.state;
+ 	let modified = false;
+ 	const file = await readJsoncFile(relPath, cwd);
+-	if (!isManifest(file.data)) return modified;
++	// Support files with only a version field (like tauri.conf.json)
++	const hasVersion = file.data && typeof file.data === "object" && typeof file.data.version === "string";
++	if (!isManifest(file.data) && !hasVersion) return modified;
+ 	if (file.data.version == null) return modified;
+ 	if (file.data.version !== newVersion) {
+ 		file.modified.push([["version"], newVersion]);
+@@ -6335,6 +6340,71 @@ async function updateManifestFile(relPath, operation) {
+ 	return modified;
+ }
+ /**
++* Updates the version number in src-tauri/Cargo.toml (only the [package] section).
++*
++* @returns - `true` if the file was actually modified
++*/
++async function updateCargoToml(relPath, operation) {
++	const { cwd } = operation.options;
++	const { currentVersion, newVersion } = operation.state;
++	let modified = false;
++	const file = await readTextFile(relPath, cwd);
++	// Match version in [package] section: version = "x.y.z"
++	const versionPattern = new RegExp(`(^\\s*version\\s*=\\s*["']?)${currentVersion.replace(/(\W)/g, "\\$1")}(["']?\\s*$)`, "m");
++	if (versionPattern.test(file.data)) {
++		file.data = file.data.replace(versionPattern, `$1${newVersion}$2`);
++		await writeTextFile(file);
++		modified = true;
++	}
++	return modified;
++}
++/**
++* Updates the version number in src-tauri/Cargo.lock (only the main package).
++*
++* @returns - `true` if the file was actually modified
++*/
++async function updateCargoLock(relPath, operation) {
++	const { cwd } = operation.options;
++	const { currentVersion, newVersion } = operation.state;
++	let modified = false;
++	const file = await readTextFile(relPath, cwd);
++	// Only update the main package version, not dependencies.
++	// Read the package name from Cargo.toml to identify the main package.
++	const lockDir = path$1.dirname(path$1.join(cwd, relPath));
++	const cargoTomlPath = path$1.join(lockDir, "Cargo.toml");
++	let packageName = null;
++	if (existsSync(cargoTomlPath)) {
++		const cargoTomlRelPath = path$1.relative(cwd, cargoTomlPath);
++		const cargoTomlContent = await readTextFile(cargoTomlRelPath, cwd);
++		const nameMatch = cargoTomlContent.data.match(/^name\s*=\s*["']([^"']+)["']/m);
++		if (nameMatch) {
++			packageName = nameMatch[1];
++		}
++	}
++	if (packageName) {
++		// Match version only for the main package: [[package]] followed by
++		// name = "package-name" followed by version = "x.y.z"
++		const escapedPackageName = packageName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
++		const escapedCurrentVersion = currentVersion.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
++		const mainPackagePattern = new RegExp(`(\\[\\[package\\]\\][\\s\\S]*?name\\s*=\\s*["']${escapedPackageName}["'][\\s\\S]*?version\\s*=\\s*["']?)${escapedCurrentVersion}(["'])`, "m");
++		if (mainPackagePattern.test(file.data)) {
++			file.data = file.data.replace(mainPackagePattern, `$1${newVersion}$2`);
++			await writeTextFile(file);
++			modified = true;
++		}
++	} else {
++		// Fallback: only replace the first occurrence (likely the main package)
++		const escapedCurrentVersion = currentVersion.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
++		const versionPattern = new RegExp(`(^version\\s*=\\s*["']?)${escapedCurrentVersion}(["']\\s*$)`, "m");
++		if (versionPattern.test(file.data)) {
++			file.data = file.data.replace(versionPattern, `$1${newVersion}$2`);
++			await writeTextFile(file);
++			modified = true;
++		}
++	}
++	return modified;
++}
++/**
+ * Updates all occurrences of the version number in the specified text file.
+ *
+ * @returns - `true` if the file was actually modified

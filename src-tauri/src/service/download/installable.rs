@@ -1,0 +1,81 @@
+use crate::config;
+use async_trait::async_trait;
+use std::path::PathBuf;
+use tauri::AppHandle;
+
+#[async_trait]
+pub trait Installable: Send + Sync {
+    fn title(&self) -> &str;
+    fn check_installed(&self, app: &AppHandle) -> bool;
+    fn get_download_url(&self) -> Result<String, String>;
+    fn get_install_path(&self, app: &AppHandle) -> PathBuf;
+}
+
+// --- Node.js 实现 ---
+pub struct Nodejs;
+
+#[async_trait]
+impl Installable for Nodejs {
+    fn title(&self) -> &str {
+        "运行环境"
+    }
+    fn get_download_url(&self) -> Result<String, String> {
+        config::get_node_download_url()
+    }
+    fn get_install_path(&self, app: &AppHandle) -> PathBuf {
+        config::get_node_install_path(app)
+    }
+    fn check_installed(&self, app: &AppHandle) -> bool {
+        if let Some(local_node) = config::get_local_node_path() {
+            log::info!(
+                "Detected compatible local Node.js ({}), skipping bundled runtime",
+                local_node.display()
+            );
+            return true;
+        }
+        config::get_node_binary_path(app).exists() && config::is_runtime_compatible(app)
+    }
+}
+
+// --- DeepSeek Harness 实现 ---
+pub struct Dsh;
+
+#[async_trait]
+impl Installable for Dsh {
+    fn title(&self) -> &str {
+        "Harness 核心"
+    }
+    fn get_download_url(&self) -> Result<String, String> {
+        config::get_dsh_download_url()
+    }
+    fn get_install_path(&self, app: &AppHandle) -> PathBuf {
+        config::get_dsh_install_path(app)
+    }
+    fn check_installed(&self, app: &AppHandle) -> bool {
+        config::get_dsh_binary_path(app).exists()
+    }
+}
+
+// --- pnpm 实现（dsh 的 plugin 命令依赖） ---
+pub struct Pnpm;
+
+#[async_trait]
+impl Installable for Pnpm {
+    fn title(&self) -> &str {
+        "pnpm 包管理器"
+    }
+    fn get_download_url(&self) -> Result<String, String> {
+        Ok(config::get_pnpm_download_url())
+    }
+    fn get_install_path(&self, app: &AppHandle) -> PathBuf {
+        config::get_pnpm_install_path(app)
+    }
+    fn check_installed(&self, app: &AppHandle) -> bool {
+        // "有则跳过"：用户 PATH 中已有 pnpm 时不再安装捆绑版
+        if crate::service::cli::find_user_pnpm(app).is_some() {
+            log::info!("Detected user-installed pnpm, skipping bundled pnpm");
+            return true;
+        }
+        config::get_pnpm_binary_path(app).exists()
+    }
+}
