@@ -302,11 +302,16 @@ pub async fn install(app_handle: &AppHandle, specs: &[String]) -> Result<(), Str
 }
 
 fn git_available(envs: &HashMap<String, String>) -> bool {
-    Command::new(if cfg!(windows) { "git.exe" } else { "git" })
-        .arg("--version")
-        .envs(envs)
-        .output()
-        .is_ok_and(|output| output.status.success())
+    let mut command = Command::new(if cfg!(windows) { "git.exe" } else { "git" });
+    command.arg("--version").envs(envs);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // 打包版是无控制台的 GUI 进程：不加隐藏标志时每次探测都会闪一个
+        // 可见控制台窗口（插件包逐个安装会连续闪烁），这里直接抑制。
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    command.output().is_ok_and(|output| output.status.success())
 }
 
 fn summarize_process_output(output: &str) -> String {
@@ -644,10 +649,16 @@ async fn ensure_pnpm(app_handle: &AppHandle, window: &WebviewWindow) -> Result<b
 /// （corepack shim 在 Node 24 上 ERR_INVALID_THIS 崩溃等）返回 None。
 fn user_pnpm_major_version(app_handle: &AppHandle) -> Option<u32> {
     let pnpm = cli::find_user_pnpm(app_handle)?;
-    let output = std::process::Command::new(&pnpm)
-        .arg("--version")
-        .output()
-        .ok()?;
+    let mut command = std::process::Command::new(&pnpm);
+    command.arg("--version");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // pnpm 探测在安装/移除前可能反复执行，且 pnpm 常是 .cmd 包装：
+        // 不加隐藏标志会与 git 探测一样闪控制台窗口。
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let output = command.output().ok()?;
     if !output.status.success() {
         return None;
     }
