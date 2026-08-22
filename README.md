@@ -14,9 +14,7 @@
 
 </div>
 
-<p align="center">
-  <img src="docs/images/hero-zh.png" width="100%" alt="DSH Launcher" />
-</p>
+
 
 ## 它是什么
 
