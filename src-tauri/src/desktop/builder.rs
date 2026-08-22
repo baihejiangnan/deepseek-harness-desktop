@@ -105,7 +105,7 @@ pub fn build_tray_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<()> {
     if app.get_webview_window("tray-menu").is_some() {
         return Ok(());
     }
-    WebviewWindowBuilder::new(
+    let builder = WebviewWindowBuilder::new(
         app,
         "tray-menu",
         WebviewUrl::App("index.html?view=tray".into()),
@@ -115,14 +115,18 @@ pub fn build_tray_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<()> {
     .inner_size(320.0, 460.0)
     .min_inner_size(300.0, 380.0)
     .resizable(false)
-    .decorations(false)
-    .transparent(true)
+    .decorations(false);
+    // 透明窗口在 macOS 上需要 tauri 的 macos-private-api feature，
+    // 当前未启用；Windows/Linux 上保持透明圆角托盘面板。
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.transparent(true);
+    let builder = builder
     .skip_taskbar(true)
     .always_on_top(true)
     .shadow(true)
     .focused(false)
-    .visible(false)
-    .build()?;
+    .visible(false);
+    builder.build()?;
     Ok(())
 }
 

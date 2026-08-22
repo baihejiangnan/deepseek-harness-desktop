@@ -66,6 +66,7 @@ pub async fn export_profile(
         return Err("EXPORT_PROFILE_NOT_FOUND: profile directory does not exist".to_string());
     }
 
+    #[cfg(windows)]
     let destination = rfd::AsyncFileDialog::new()
         .set_title("Export DSH Profile")
         .set_file_name(format!("{}-{}-export.zip", instance.name, instance.profile))
@@ -73,6 +74,11 @@ pub async fn export_profile(
         .save_file()
         .await
         .ok_or_else(|| "EXPORT_CANCELLED".to_string())?;
+    // rfd 仅作为 Windows 专属依赖声明；非 Windows 平台不提供导出对话框。
+    #[cfg(not(windows))]
+    let destination = {
+        return Err("EXPORT_UNSUPPORTED: export dialog is only available on Windows".to_string());
+    };
     let destination = PathBuf::from(destination.path());
     let file = fs::File::create(&destination).map_err(|error| format!("EXPORT_CREATE: {error}"))?;
     let mut archive = zip::ZipWriter::new(file);
@@ -123,6 +129,7 @@ pub async fn export_instance_home(
     instance_id: &str,
 ) -> Result<String, String> {
     let impact = crate::config::instance::removal_impact(&app_handle, instance_id)?;
+    #[cfg(windows)]
     let destination = rfd::AsyncFileDialog::new()
         .set_title("Export complete DSH Home")
         .set_file_name(format!("dsh-home-{}-backup.zip", instance_id))
@@ -130,6 +137,11 @@ pub async fn export_instance_home(
         .save_file()
         .await
         .ok_or_else(|| "EXPORT_CANCELLED".to_string())?;
+    // rfd 仅作为 Windows 专属依赖声明；非 Windows 平台不提供导出对话框。
+    #[cfg(not(windows))]
+    let destination = {
+        return Err("EXPORT_UNSUPPORTED: export dialog is only available on Windows".to_string());
+    };
     let destination = PathBuf::from(destination.path());
 
     // Never allow the backup file to be created inside the directory that is
