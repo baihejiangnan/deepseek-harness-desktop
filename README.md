@@ -20,7 +20,7 @@
 
 ## 它是什么
 
-[DeepSeek Harness](https://zhuanlan.zhihu.com/p/2071576464810682036)（DSH）是 DeepSeek 官方开源的 Agent 运行时：模型负责"想"，Harness 负责"做"。它会将会话、凭据、设置、用户预设和 Profile 全部写进一个 `DSH_HOME` 目录。
+DSH是 DeepSeek 官方开源的 Agent 运行时：模型负责"想"，Harness 负责"做"。它会将会话、凭据、设置、用户预设和 Profile 全部写进一个 `DSH_HOME` 目录。
 
 装一个 DSH 很简单，但要用好它，很快就会发现缺一个"多开"的能力：
 
