@@ -19,6 +19,13 @@ fn launcher_icon() -> tauri::Result<tauri::image::Image<'static>> {
         .map(|image| image.to_owned())
 }
 
+/// 实例宿主窗口专用图标：启动器/托盘/安装快捷方式使用 dsh 新图标，
+/// 实例窗口保持旧图标以区分启动器与实例进程（AppUserModelID 已区分任务栏入口）。
+fn instance_icon() -> tauri::Result<tauri::image::Image<'static>> {
+    tauri::image::Image::from_bytes(include_bytes!("../../icons/instance.ico"))
+        .map(|image| image.to_owned())
+}
+
 /// setup app
 pub fn setup(app_handle: tauri::AppHandle) {
     // 启动前清扫上次崩溃残留的孤儿 Harness（端口/PID 双重确认，见
@@ -224,6 +231,7 @@ pub fn build_instance_window(
             WebviewUrl::External(url.clone()),
         )
         .title(format!("DSH - {}", instance.name))
+        .icon(instance_icon()?)?
         .inner_size(1280.0, 800.0)
         .min_inner_size(960.0, 640.0)
         .resizable(true)
