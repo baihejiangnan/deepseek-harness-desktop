@@ -1,6 +1,6 @@
 # DeepSeek Harness Desktop
 
-独立维护的 DSH Launcher 桌面应用，提供 DSH 实例管理、插件管理、插件包安装、运行时管理和独立窗口体验。
+ DSH Launcher 桌面应用，提供 DSH 实例管理、插件管理、插件包安装、运行时管理和独立窗口体验。
 
 ## 项目定位
 
