@@ -250,7 +250,6 @@ export default function CollaborationPanel() {
   const [confirmDeleteWorkflowId, setConfirmDeleteWorkflowId] = useState<string | null>(null)
   const [workflowActionBusy, setWorkflowActionBusy] = useState(false)
   const [worldExt, setWorldExt] = useState({ left: 0, top: 0, right: 0, bottom: 0 })
-  const [edgeHover, setEdgeHover] = useState({ left: false, top: false, right: false, bottom: false })
   const [zoom, setZoom] = useState(1)
 
   /** 编排引擎的权威图数据源：所有修改先写 ref，再同步到 state，避免事件里读到旧值 */
@@ -375,7 +374,6 @@ export default function CollaborationPanel() {
     if (direction === 'bottom')
       next.bottom += WORLD_GROW_STEP
     commitWorldExt(next)
-    setEdgeHover({ left: false, top: false, right: false, bottom: false })
   }
 
   function commitWorkspace(path: string) {
@@ -1600,20 +1598,6 @@ export default function CollaborationPanel() {
             onDragOver={event => event.preventDefault()}
             onDrop={handleCanvasDrop}
             onContextMenu={event => event.preventDefault()}
-            onPointerMove={(event) => {
-              const canvas = canvasRef.current
-              if (!canvas || draggingNode || panDrag)
-                return
-              const rect = canvas.getBoundingClientRect()
-              const threshold = 48
-              setEdgeHover({
-                left: canvas.scrollLeft <= 1 && event.clientX - rect.left < threshold,
-                top: canvas.scrollTop <= 1 && event.clientY - rect.top < threshold,
-                right: canvas.scrollLeft >= canvas.scrollWidth - canvas.clientWidth - 1 && rect.right - event.clientX < threshold,
-                bottom: canvas.scrollTop >= canvas.scrollHeight - canvas.clientHeight - 1 && rect.bottom - event.clientY < threshold,
-              })
-            }}
-            onPointerLeave={() => setEdgeHover({ left: false, top: false, right: false, bottom: false })}
             onScroll={() => {
               const canvas = canvasRef.current
               if (!canvas)
@@ -1738,46 +1722,38 @@ export default function CollaborationPanel() {
           <span className="pointer-events-none absolute bottom-3 left-3 z-10 rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)]/90 px-2.5 py-1.5 text-[11px] text-[var(--launcher-muted)]">
             {t('launcher.collaboration.canvas_pan_hint')}
           </span>
-          {edgeHover.left && (
-            <button
-              type="button"
-              title={t('launcher.collaboration.canvas_expand_left')}
-              className="absolute left-2 top-1/2 z-10 grid size-8 -translate-y-1/2 place-items-center rounded-full border border-[var(--launcher-brand)] bg-[var(--launcher-surface)] text-[var(--launcher-brand)] shadow-[0_4px_12px_rgba(42,70,90,0.18)] hover:bg-white"
-              onClick={() => expandWorld('left')}
-            >
-              <Plus className="size-4" />
-            </button>
-          )}
-          {edgeHover.top && (
-            <button
-              type="button"
-              title={t('launcher.collaboration.canvas_expand_top')}
-              className="absolute left-1/2 top-2 z-10 grid size-8 -translate-x-1/2 place-items-center rounded-full border border-[var(--launcher-brand)] bg-[var(--launcher-surface)] text-[var(--launcher-brand)] shadow-[0_4px_12px_rgba(42,70,90,0.18)] hover:bg-white"
-              onClick={() => expandWorld('top')}
-            >
-              <Plus className="size-4" />
-            </button>
-          )}
-          {edgeHover.right && (
-            <button
-              type="button"
-              title={t('launcher.collaboration.canvas_expand_right')}
-              className="absolute right-2 top-1/2 z-10 grid size-8 -translate-y-1/2 place-items-center rounded-full border border-[var(--launcher-brand)] bg-[var(--launcher-surface)] text-[var(--launcher-brand)] shadow-[0_4px_12px_rgba(42,70,90,0.18)] hover:bg-white"
-              onClick={() => expandWorld('right')}
-            >
-              <Plus className="size-4" />
-            </button>
-          )}
-          {edgeHover.bottom && (
-            <button
-              type="button"
-              title={t('launcher.collaboration.canvas_expand_bottom')}
-              className="absolute bottom-2 left-1/2 z-10 grid size-8 -translate-x-1/2 place-items-center rounded-full border border-[var(--launcher-brand)] bg-[var(--launcher-surface)] text-[var(--launcher-brand)] shadow-[0_4px_12px_rgba(42,70,90,0.18)] hover:bg-white"
-              onClick={() => expandWorld('bottom')}
-            >
-              <Plus className="size-4" />
-            </button>
-          )}
+          <button
+            type="button"
+            title={t('launcher.collaboration.canvas_expand_left')}
+            className="absolute left-5 top-1/2 z-10 grid size-8 -translate-y-1/2 place-items-center rounded-full border border-[var(--launcher-brand)] bg-[var(--launcher-surface)]/80 text-[var(--launcher-brand)] shadow-[0_4px_12px_rgba(42,70,90,0.18)] transition-opacity hover:bg-white"
+            onClick={() => expandWorld('left')}
+          >
+            <Plus className="size-4" />
+          </button>
+          <button
+            type="button"
+            title={t('launcher.collaboration.canvas_expand_top')}
+            className="absolute left-1/2 top-5 z-10 grid size-8 -translate-x-1/2 place-items-center rounded-full border border-[var(--launcher-brand)] bg-[var(--launcher-surface)]/80 text-[var(--launcher-brand)] shadow-[0_4px_12px_rgba(42,70,90,0.18)] transition-opacity hover:bg-white"
+            onClick={() => expandWorld('top')}
+          >
+            <Plus className="size-4" />
+          </button>
+          <button
+            type="button"
+            title={t('launcher.collaboration.canvas_expand_right')}
+            className="absolute right-5 top-1/2 z-10 grid size-8 -translate-y-1/2 place-items-center rounded-full border border-[var(--launcher-brand)] bg-[var(--launcher-surface)]/80 text-[var(--launcher-brand)] shadow-[0_4px_12px_rgba(42,70,90,0.18)] transition-opacity hover:bg-white"
+            onClick={() => expandWorld('right')}
+          >
+            <Plus className="size-4" />
+          </button>
+          <button
+            type="button"
+            title={t('launcher.collaboration.canvas_expand_bottom')}
+            className="absolute bottom-5 left-1/2 z-10 grid size-8 -translate-x-1/2 place-items-center rounded-full border border-[var(--launcher-brand)] bg-[var(--launcher-surface)]/80 text-[var(--launcher-brand)] shadow-[0_4px_12px_rgba(42,70,90,0.18)] transition-opacity hover:bg-white"
+            onClick={() => expandWorld('bottom')}
+          >
+            <Plus className="size-4" />
+          </button>
         </div>
         <div className={`min-w-0 flex-1 overflow-y-auto p-5 ${collabView === 'workflows' ? '' : 'hidden'}`}>
           <div className="mx-auto max-w-[760px]">
