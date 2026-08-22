@@ -53,6 +53,11 @@ pub async fn export_profile(
     app_handle: AppHandle,
     input: ProfileExportInput,
 ) -> Result<String, String> {
+    // rfd 仅作为 Windows 专属依赖声明；非 Windows 平台不提供导出对话框。
+    #[cfg(not(windows))]
+    {
+        return Err("EXPORT_UNSUPPORTED: export dialog is only available on Windows".to_string());
+    }
     let instance = crate::config::instance::find(&app_handle, &input.instance_id)?;
     if !input.include_profile && !input.include_plugins && !input.include_sessions {
         return Err("EXPORT_EMPTY: select profile, plugins, or sessions to export".to_string());
@@ -74,11 +79,6 @@ pub async fn export_profile(
         .save_file()
         .await
         .ok_or_else(|| "EXPORT_CANCELLED".to_string())?;
-    // rfd 仅作为 Windows 专属依赖声明；非 Windows 平台不提供导出对话框。
-    #[cfg(not(windows))]
-    let destination = {
-        return Err("EXPORT_UNSUPPORTED: export dialog is only available on Windows".to_string());
-    };
     let destination = PathBuf::from(destination.path());
     let file = fs::File::create(&destination).map_err(|error| format!("EXPORT_CREATE: {error}"))?;
     let mut archive = zip::ZipWriter::new(file);
@@ -128,6 +128,11 @@ pub async fn export_instance_home(
     app_handle: AppHandle,
     instance_id: &str,
 ) -> Result<String, String> {
+    // rfd 仅作为 Windows 专属依赖声明；非 Windows 平台不提供导出对话框。
+    #[cfg(not(windows))]
+    {
+        return Err("EXPORT_UNSUPPORTED: export dialog is only available on Windows".to_string());
+    }
     let impact = crate::config::instance::removal_impact(&app_handle, instance_id)?;
     #[cfg(windows)]
     let destination = rfd::AsyncFileDialog::new()
@@ -137,11 +142,6 @@ pub async fn export_instance_home(
         .save_file()
         .await
         .ok_or_else(|| "EXPORT_CANCELLED".to_string())?;
-    // rfd 仅作为 Windows 专属依赖声明；非 Windows 平台不提供导出对话框。
-    #[cfg(not(windows))]
-    let destination = {
-        return Err("EXPORT_UNSUPPORTED: export dialog is only available on Windows".to_string());
-    };
     let destination = PathBuf::from(destination.path());
 
     // Never allow the backup file to be created inside the directory that is
