@@ -1,5 +1,5 @@
 import type { PackInstallProgress } from './download-center'
-import { ArrowDownToLine, CircleInfo, Gear, Rocket } from '@gravity-ui/icons'
+import { ArrowDownToLine, CircleInfo, Gear, Minus, Persons, Rocket, Square, Xmark } from '@gravity-ui/icons'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -8,15 +8,15 @@ import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
 import { useStore } from 'valtio-define'
 import { store } from '@/store'
-import { desktopUpdate } from '@/store/modules/desktop-update'
 import { updater } from '@/store/modules/updater'
+import CollaborationPanel from './collaboration-panel'
 import DownloadCenter from './download-center'
 import InstanceManager from './instance-manager'
 import InstanceWizard from './instance-wizard'
 import MorePanel from './more-panel'
 import PersonalizationPanel from './personalization-panel'
 
-type Section = 'launch' | 'resources' | 'settings' | 'more'
+type Section = 'launch' | 'resources' | 'collaboration' | 'settings' | 'more'
 const DSH_UPDATE_POLL_INTERVAL = 10 * 60_000
 
 export default function LauncherShell() {
@@ -31,6 +31,7 @@ export default function LauncherShell() {
   const items: Array<{ id: Section, icon: typeof Rocket }> = [
     { id: 'launch', icon: Rocket },
     { id: 'resources', icon: ArrowDownToLine },
+    { id: 'collaboration', icon: Persons },
     { id: 'settings', icon: Gear },
     { id: 'more', icon: CircleInfo },
   ]
@@ -59,7 +60,7 @@ export default function LauncherShell() {
     let disposed = false
     let unlistenTrayOpen: (() => void) | undefined
     let unlistenTrayUpdate: (() => void) | undefined
-    let unlistenTrayAbout: (() => void) | undefined
+    let unlistenTraySettings: (() => void) | undefined
     void listen('tray-open-launcher', () => {
       setSection('launch')
       void getCurrentWindow().show()
@@ -82,15 +83,15 @@ export default function LauncherShell() {
       else
         unlistenTrayUpdate = fn
     })
-    void listen('tray-open-about', () => {
+    void listen('tray-open-settings', () => {
+      setSection('settings')
       void getCurrentWindow().show()
       void getCurrentWindow().setFocus()
-      void desktopUpdate.openAbout()
     }).then((fn) => {
       if (disposed)
         fn()
       else
-        unlistenTrayAbout = fn
+        unlistenTraySettings = fn
     })
     return () => {
       disposed = true
@@ -98,7 +99,7 @@ export default function LauncherShell() {
       window.clearInterval(updateTimer)
       unlistenTrayOpen?.()
       unlistenTrayUpdate?.()
-      unlistenTrayAbout?.()
+      unlistenTraySettings?.()
     }
   }, [])
 
@@ -145,8 +146,15 @@ export default function LauncherShell() {
           })}
         </nav>
         <div className="flex-1 self-stretch" data-tauri-drag-region />
-        <button className="z-10 grid size-8 place-items-center rounded-[7px] text-base transition-colors hover:bg-white/10" type="button" onClick={() => { void getCurrentWindow().minimize() }}>-</button>
-        <button className="z-10 grid size-8 place-items-center rounded-[7px] text-base transition-colors hover:bg-danger" type="button" onClick={() => { void getCurrentWindow().hide() }}>x</button>
+        <button className="z-10 grid size-8 place-items-center rounded-[7px] text-base transition-colors hover:bg-white/10" type="button" aria-label={t('nav.minimize')} title={t('nav.minimize')} onClick={() => { void getCurrentWindow().minimize() }}>
+          <Minus className="size-4" />
+        </button>
+        <button className="z-10 grid size-8 place-items-center rounded-[7px] text-base transition-colors hover:bg-white/10" type="button" aria-label={t('nav.maximize')} title={t('nav.maximize')} onClick={() => { void getCurrentWindow().toggleMaximize() }}>
+          <Square className="size-3.5" />
+        </button>
+        <button className="z-10 grid size-8 place-items-center rounded-[7px] text-base transition-colors hover:bg-danger" type="button" aria-label={t('nav.close')} title={t('nav.close')} onClick={() => { void getCurrentWindow().hide() }}>
+          <Xmark className="size-4" />
+        </button>
       </header>
       {updating && (
         <div className="h-1 w-full flex-none bg-[var(--launcher-selected)]" role="progressbar" aria-label={t('update.dsh_updating')} aria-valuetext={phaseTitle || t('update.dsh_updating')} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress)}>
@@ -171,7 +179,10 @@ export default function LauncherShell() {
           <div className={`${section === 'resources' ? 'flex' : 'hidden'} min-h-0 min-w-0 flex-1`}>
             <DownloadCenter onPackProgress={setPackProgress} />
           </div>
-          {section !== 'resources' && (
+          <div className={`${section === 'collaboration' ? 'flex' : 'hidden'} min-h-0 min-w-0 flex-1`}>
+            <CollaborationPanel />
+          </div>
+          {section !== 'resources' && section !== 'collaboration' && (
             <div key={section} className="launcher-content-enter flex min-h-0 min-w-0 flex-1">
               <If cond={section === 'launch'} then={registry.instances.length === 0 ? <InstanceWizard /> : <InstanceManager key={launchRequest} onGoDownloads={() => { setSection('resources') }} />} else={section === 'settings' ? <PersonalizationPanel /> : <MorePanel key={moreRequest} />} />
             </div>

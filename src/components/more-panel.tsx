@@ -197,14 +197,6 @@ function LinksSection() {
       mark: 'UI',
     },
     {
-      id: 'hairyf-launcher',
-      title: t('launcher.more_links.hairyf_launcher'),
-      description: t('launcher.more_links.hairyf_launcher_description'),
-      url: 'github.com/hairyf/deepseek-harness-desktop',
-      href: 'https://github.com/hairyf/deepseek-harness-desktop',
-      mark: 'ORIG',
-    },
-    {
       id: 'marcogh-launcher',
       title: t('launcher.more_links.marcogh_launcher'),
       description: t('launcher.more_links.marcogh_launcher_description'),

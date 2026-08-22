@@ -155,7 +155,7 @@ pub(crate) fn normalize_home_for_export(path: &Path) -> Result<PathBuf, String> 
     normalize_home(path)
 }
 
-fn ensure_profile(home: &Path, profile: &str) -> Result<(), String> {
+pub(crate) fn ensure_profile(home: &Path, profile: &str) -> Result<(), String> {
     let directory = home.join("profiles").join(profile);
     fs::create_dir_all(&directory).map_err(|error| format!("INSTANCE_PROFILE_CREATE: {error}"))?;
     let manifest = directory.join("package.json");

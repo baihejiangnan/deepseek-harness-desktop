@@ -54,6 +54,11 @@ pub fn current() -> RunMode {
     RunMode::Launcher
 }
 
+/// 实例宿主是否以最小化窗口启动（协作子 Agent 的后台运行模式）。
+pub fn window_start_minimized() -> bool {
+    std::env::args().any(|arg| arg == "--start-minimized")
+}
+
 #[cfg(windows)]
 pub fn set_app_user_model_id(mode: &RunMode) {
     use windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;

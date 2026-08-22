@@ -39,8 +39,8 @@ pub fn get_node_download_url() -> Result<String, String> {
     };
 
     Ok(format!(
-        "{}/{}/{}",
-        node_base_url(detect_region()),
+        "{}{}/{}",
+        node_base_url(detect_region()).trim_end_matches('/'),
         NODE_VERSION,
         filename
     ))
@@ -401,6 +401,10 @@ mod tests {
         // 无论哪个地域，URL 都以 https 开头并保留平台文件名（镜像只是换前缀）
         let node = get_node_download_url().expect("node url");
         assert!(node.starts_with("https://"));
+        assert!(
+            !node.contains("//v"),
+            "node path must not contain a doubled slash"
+        );
         let filename = node.rsplit('/').next().expect("node url filename");
         assert!(filename.starts_with(&format!("node-{}", NODE_VERSION)));
         assert!(filename.ends_with(".zip") || filename.ends_with(".tar.gz"));

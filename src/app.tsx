@@ -1,4 +1,3 @@
-import DesktopAboutDialog from './components/desktop-about-dialog'
 import HarnessUpdater from './components/harness-updater'
 import LauncherShell from './components/launcher-shell'
 import TrayPanel from './components/tray-panel'
@@ -20,7 +19,6 @@ export default function App() {
     <div className="flex h-screen w-screen">
       <LauncherShell />
       <HarnessUpdater />
-      <DesktopAboutDialog />
     </div>
   )
 }

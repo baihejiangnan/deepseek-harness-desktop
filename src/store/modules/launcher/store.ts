@@ -153,18 +153,20 @@ export const launcher = defineStore({
       }
     },
 
-    async launch() {
+    /** 启动指定实例的宿主进程；协作编排需要按节点拉起任意实例，因此与“启动当前实例”共用同一后端入口 */
+    async launchInstance(id: string, minimize = false, startMinimized = false, port?: number) {
       if (updater.updating)
         return
-      const active = this.registry.instances.find(item => item.id === this.registry.activeInstanceId)
-      if (!active)
+      const target = this.registry.instances.find(item => item.id === id)
+      if (!target)
         return
       this.error = ''
-      this.busyInstanceId = active.id
+      this.busyInstanceId = id
       try {
-        await invoke<number>('launch_instance_window', { id: active.id })
-        this.runningInstanceIds = [...new Set([...this.runningInstanceIds, active.id])]
-        await getCurrentWindow().minimize()
+        await invoke<number>('launch_instance_window', { id, minimized: startMinimized, port })
+        this.runningInstanceIds = [...new Set([...this.runningInstanceIds, id])]
+        if (minimize)
+          await getCurrentWindow().minimize()
       }
       catch (error) {
         const message = String(error)
@@ -183,6 +185,13 @@ export const launcher = defineStore({
       finally {
         this.busyInstanceId = null
       }
+    },
+
+    async launch() {
+      const active = this.registry.instances.find(item => item.id === this.registry.activeInstanceId)
+      if (!active)
+        return
+      await this.launchInstance(active.id, true)
     },
 
     async stopInstance(id: string) {

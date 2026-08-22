@@ -66,7 +66,7 @@ export default function InstanceSettings({ instance, sharing, isRunning, dshVers
       <main className="min-h-0 min-w-0 flex-1 overflow-y-auto px-8 py-7">
         <div key={`${instance.id}-${section}`} className="launcher-content-enter mx-auto max-w-[1080px]">
           {section === 'environment' && <EnvironmentSettings instance={instance} sharing={sharing} isRunning={isRunning} dshVersion={dshVersion} />}
-          {section === 'plugins' && <PluginSettings instance={instance} onGoDownloads={onGoDownloads} />}
+          {section === 'plugins' && <PluginSettings instance={instance} isRunning={isRunning} onGoDownloads={onGoDownloads} />}
           {section === 'export' && <ExportSettings instance={instance} isRunning={isRunning} />}
         </div>
       </main>
@@ -139,9 +139,12 @@ function EnvironmentSettings({ instance, sharing, isRunning, dshVersion }: Omit<
   )
 }
 
-function PluginSettings({ instance, onGoDownloads }: { instance: DshInstance, onGoDownloads?: () => void }) {
+function PluginSettings({ instance, isRunning, onGoDownloads }: { instance: DshInstance, isRunning: boolean, onGoDownloads?: () => void }) {
   const { t } = useTranslation()
+  const { registry, runningInstanceIds } = useStore(store.launcher)
+  const { serviceRunning } = useStore(store.harness)
   const { plugins, loading, error, refresh } = useDshPlugins(instance.id)
+  const homeRunning = registry.instances.some(item => item.dshHome === instance.dshHome && runningInstanceIds.includes(item.id)) || (serviceRunning && registry.activeInstanceId === instance.id)
   const [pendingRemove, setPendingRemove] = useState<typeof plugins[number] | null>(null)
   const [busyPlugin, setBusyPlugin] = useState('')
   const [actionError, setActionError] = useState('')
@@ -154,6 +157,8 @@ function PluginSettings({ instance, onGoDownloads }: { instance: DshInstance, on
   })
 
   async function togglePlugin(plugin: typeof plugins[number]) {
+    if (homeRunning)
+      return
     setBusyPlugin(plugin.id)
     setActionError('')
     try {
@@ -170,7 +175,7 @@ function PluginSettings({ instance, onGoDownloads }: { instance: DshInstance, on
   }
 
   async function removePlugin() {
-    if (!pendingRemove)
+    if (!pendingRemove || homeRunning)
       return
     setBusyPlugin(pendingRemove.id)
     setActionError('')
@@ -191,6 +196,7 @@ function PluginSettings({ instance, onGoDownloads }: { instance: DshInstance, on
   return (
     <div className="space-y-6">
       <SectionHeading title={t('launcher.instance_settings_nav.plugins')} description={t('launcher.plugins_description')} />
+      {homeRunning && <div className="rounded-md border border-[#ead39e] bg-[#fff8e8] px-3 py-2 text-xs text-[#72521b]">{isRunning ? t('download.stop_instance_first') : t('download.stop_home_first')}</div>}
       <div className="flex items-center justify-between gap-3 rounded-md border border-[var(--launcher-border)] bg-white px-4 py-3">
         <div className="min-w-0">
           <div className="text-xs text-[var(--launcher-muted)]">{t('launcher.profile')}</div>
@@ -232,7 +238,7 @@ function PluginSettings({ instance, onGoDownloads }: { instance: DshInstance, on
               size="sm"
               variant="outline"
               className="h-8 rounded-md border-[var(--launcher-border)] px-2 text-xs text-[var(--launcher-ink)]"
-              isDisabled={busyPlugin !== ''}
+              isDisabled={busyPlugin !== '' || homeRunning}
               onPress={() => { void togglePlugin(plugin) }}
             >
               <Power className="size-3.5" />
@@ -244,7 +250,7 @@ function PluginSettings({ instance, onGoDownloads }: { instance: DshInstance, on
               variant="ghost"
               className="size-8 min-w-8 rounded-md text-danger"
               aria-label={t('launcher.plugin_remove')}
-              isDisabled={busyPlugin !== ''}
+              isDisabled={busyPlugin !== '' || homeRunning}
               onPress={() => setPendingRemove(plugin)}
             >
               <TrashBin className="size-3.5" />

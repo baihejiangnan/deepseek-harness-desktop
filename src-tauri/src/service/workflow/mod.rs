@@ -17,7 +17,7 @@ use std::process::{Command, Stdio};
 #[cfg(windows)]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use tauri::Manager;
+use tauri::{AppHandle, Manager};
 
 /// 启动守卫：并发调用 `launch` 时只允许一个真正拉起 dsh 进程
 static LAUNCH_GUARD: AtomicBool = AtomicBool::new(false);
@@ -25,6 +25,8 @@ static LAUNCH_GUARD: AtomicBool = AtomicBool::new(false);
 static OWNED_PROCESS_ID: AtomicU32 = AtomicU32::new(0);
 /// 当前实例本次启动实际分配的端口；停止后归零。
 static RUNTIME_PORT: AtomicU32 = AtomicU32::new(0);
+/// 实例宿主被启动器指定使用固定端口（协作编排先分配端口再启动）。
+static REQUESTED_PORT: AtomicU32 = AtomicU32::new(0);
 /// Windows 进程句柄用于确认 PID 仍指向原进程，消除 PID 复用误杀窗口。
 #[cfg(windows)]
 static OWNED_PROCESS_HANDLE: AtomicUsize = AtomicUsize::new(0);
@@ -38,7 +40,7 @@ impl Drop for LaunchGuard {
 }
 
 /// 从起始端口向上查找第一个空闲端口，绝不结束未知的端口占用进程。
-fn find_available_port(start: u16) -> Result<u16, String> {
+pub fn find_available_port(start: u16) -> Result<u16, String> {
     let mut port = start;
     loop {
         if !is_port_in_use(port) {
@@ -48,6 +50,20 @@ fn find_available_port(start: u16) -> Result<u16, String> {
         port = port.checked_add(1).ok_or_else(|| {
             "PORT_EXHAUSTED: no available TCP port after the configured port".to_string()
         })?;
+    }
+}
+
+/// 指定本次启动使用的固定端口；0 表示未指定（沿用自动探测）。
+pub fn set_requested_port(port: u16) {
+    REQUESTED_PORT.store(port as u32, Ordering::SeqCst);
+}
+
+fn requested_port() -> Option<u16> {
+    let port = REQUESTED_PORT.load(Ordering::SeqCst);
+    if port == 0 {
+        None
+    } else {
+        u16::try_from(port).ok()
     }
 }
 
@@ -275,6 +291,26 @@ fn kill_pid_tree(pid: u32) {
 
 pub fn has_owned_process() -> bool {
     OWNED_PROCESS_ID.load(Ordering::SeqCst) != 0
+}
+
+fn record_process_exit(app_handle: &AppHandle, pid: u32, exit_code: Option<u32>) {
+    if OWNED_PROCESS_ID
+        .compare_exchange(pid, 0, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+    let port = RUNTIME_PORT.swap(0, Ordering::SeqCst);
+    match exit_code {
+        Some(code) => log::warn!(
+            "Owned Harness process {pid} exited with code {code} (port {port}); service stopped"
+        ),
+        None => log::warn!(
+            "Owned Harness process {pid} exited (exit code unavailable, port {port}); service stopped"
+        ),
+    }
+    status::set_status(status::Status::Stopped);
+    status::emit_status(app_handle);
 }
 
 /// 结束所有从本应用 dsh 安装目录启动的 Harness 服务进程（含历史崩溃残留的孤儿实例）。
@@ -595,8 +631,12 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     }
     let _launch_guard = LaunchGuard;
 
-    // 端口属于本次运行状态：每次从推荐端口开始找空闲值，不写回永久设置。
-    let available_port = find_available_port(setting.port)?;
+    // 端口属于本次运行状态：协作编排由启动器先分配固定端口，其余场景
+    // 从推荐端口开始找空闲值；两种都不写回永久设置。
+    let available_port = match requested_port() {
+        Some(port) => port,
+        None => find_available_port(setting.port)?,
+    };
     RUNTIME_PORT.store(available_port as u32, Ordering::SeqCst);
     log::info!(
         "Instance {} allocated runtime port {}",
@@ -607,6 +647,9 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // 构造环境变量：隔离的 $DSH_HOME + 隐私默认（关闭遥测）
     let dsh_home = config::get_dsh_data_path(&app_handle);
     fs::create_dir_all(&dsh_home).map_err(|e| format!("create dsh home failed: {e}"))?;
+    // DSH 只会自动创建内置的 web/headless profile；自定义实例 profile
+    // 必须先有 package.json，否则 CLI 会先打印地址再以 code 1 退出。
+    config::instance::ensure_profile(&dsh_home, &instance.profile)?;
 
     // Windows 极简模式修复的自愈：插件已装入 profile 时确保 patch 挂载行与
     // minimal-win 用户 preset 落盘（幂等）。最佳努力：失败只告警，不阻断启动。
@@ -685,6 +728,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                 // 持有真实进程句柄直到退出；退出后仅在 PID 仍匹配时清空，避免复用。
                 let handle_value = handle as usize;
                 OWNED_PROCESS_HANDLE.store(handle_value, Ordering::SeqCst);
+                let app_for_exit = app_handle.clone();
                 std::thread::spawn(move || unsafe {
                     use windows_sys::Win32::Foundation::CloseHandle;
                     use windows_sys::Win32::System::Threading::{
@@ -695,17 +739,12 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                     // 记录退出码：启动即崩溃（插件冲突等）时前端据此快速失败，
                     // 退出码也便于诊断问题
                     let mut exit_code: u32 = 0;
-                    if GetExitCodeProcess(process_handle, &mut exit_code) != 0 {
-                        log::warn!("Owned Harness process {pid} exited with code {exit_code}");
+                    let exit_code = if GetExitCodeProcess(process_handle, &mut exit_code) != 0 {
+                        Some(exit_code)
                     } else {
-                        log::warn!("Owned Harness process {pid} exited (exit code unavailable)");
-                    }
-                    let _ = OWNED_PROCESS_ID.compare_exchange(
-                        pid,
-                        0,
-                        Ordering::SeqCst,
-                        Ordering::SeqCst,
-                    );
+                        None
+                    };
+                    record_process_exit(&app_for_exit, pid, exit_code);
                     let owns_handle = OWNED_PROCESS_HANDLE
                         .compare_exchange(handle_value, 0, Ordering::SeqCst, Ordering::SeqCst)
                         .is_ok();
@@ -744,20 +783,10 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                 let stdout = child.stdout.take();
                 let stderr = child.stderr.take();
                 OWNED_PROCESS_ID.store(pid, Ordering::SeqCst);
+                let app_for_exit = app_handle.clone();
                 std::thread::spawn(move || {
                     let code = child.wait().ok().and_then(|status| status.code());
-                    // 记录退出码：启动即崩溃（插件冲突等）时前端据此快速失败
-                    if let Some(code) = code {
-                        log::warn!("Owned Harness process {pid} exited with code {code}");
-                    } else {
-                        log::warn!("Owned Harness process {pid} exited (no exit code)");
-                    }
-                    let _ = OWNED_PROCESS_ID.compare_exchange(
-                        pid,
-                        0,
-                        Ordering::SeqCst,
-                        Ordering::SeqCst,
-                    );
+                    record_process_exit(&app_for_exit, pid, code.map(|value| value as u32));
                 });
                 (stdout, stderr, pid)
             })
@@ -1011,6 +1040,20 @@ pub async fn proxy_health_check(port: u16) -> Result<String, String> {
         }
     }
     Err("HARNESS_NOT_READY: Harness service is not ready".to_string())
+}
+
+/// 等待 DSH Web 服务可访问（HTTP / 返回 200）。实例宿主窗口必须在服务真正
+/// 监听后再加载地址，否则 WebView 会先展示“拒绝连接”且不会自动重试。
+/// 超时后返回 false 但仍由调用方继续开窗，保留错误页以便诊断。
+pub async fn wait_until_web_ready(port: u16, timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if utils::is_dsh_running(port).await {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    false
 }
 
 #[cfg(test)]

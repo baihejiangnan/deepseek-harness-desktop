@@ -19,11 +19,9 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 
 /// 仓库主页（同时用于构造 atom / expanded_assets / 下载地址）
-const REPO_URL: &str = "https://github.com/hairyf/deepseek-harness-desktop";
-/// 版权信息（与 tauri.conf.json bundle.copyright 保持一致）
-const COPYRIGHT: &str = "Copyright © 2026 Deepseek Harness Desktop contributors";
-/// About 对话框的 "Powered by" 文案
-const POWERED_BY: &str = "DeepSeek Harness";
+const REPO_URL: &str = "https://github.com/baihejiangnan/deepseek-harness-desktop";
+/// 新仓库尚未发布桌面安装包时的兼容发布源；新仓库有 Release 后自动优先使用它。
+const LEGACY_REPO_URL: &str = "https://github.com/hairyf/deepseek-harness-desktop";
 /// AppData 下安装包存放目录名
 const UPDATES_DIR: &str = "updates";
 
@@ -139,9 +137,9 @@ fn find_token<'a>(s: &'a str, marker: &str, end_marker: &str) -> Option<&'a str>
 /// 从 releases.atom 解析最新 release 的 (tag, 发布时间)。
 ///
 /// 不走 api.github.com，故不受未认证限流约束。
-async fn fetch_latest_meta() -> Result<(String, String), String> {
+async fn fetch_latest_meta(repo_url: &str) -> Result<(String, String), String> {
     let body = http_client()?
-        .get(format!("{REPO_URL}/releases.atom"))
+        .get(format!("{repo_url}/releases.atom"))
         .send()
         .await
         .map_err(|e| format!("UPDATE_ATOM: {e}"))?
@@ -185,9 +183,9 @@ fn extract_asset_names(html: &str, tag: &str) -> Vec<String> {
 /// 从 release 的 expanded_assets 页面解析全部安装包资产文件名。
 ///
 /// 不走 api.github.com，故不受未认证限流约束。
-async fn fetch_asset_names(tag: &str) -> Result<Vec<String>, String> {
+async fn fetch_asset_names(repo_url: &str, tag: &str) -> Result<Vec<String>, String> {
     let body = http_client()?
-        .get(format!("{REPO_URL}/releases/expanded_assets/{tag}"))
+        .get(format!("{repo_url}/releases/expanded_assets/{tag}"))
         .send()
         .await
         .map_err(|e| format!("UPDATE_ASSETS: {e}"))?
@@ -204,26 +202,32 @@ async fn fetch_asset_names(tag: &str) -> Result<Vec<String>, String> {
 /// 返回 `Ok(Some(LatestRelease))` 表示有更新且匹配到当前平台安装包；
 /// `Ok(None)` 表示无更新（或未匹配到资产）。网络失败返回 Err。
 async fn fetch_latest_release() -> Result<Option<LatestRelease>, String> {
-    let (tag, published_at) = fetch_latest_meta().await?;
-    let version = tag.trim_start_matches('v').to_string();
-    if !is_newer(&version, &current_version()) {
-        return Ok(None);
+    for repo_url in [REPO_URL, LEGACY_REPO_URL] {
+        let Ok((tag, published_at)) = fetch_latest_meta(repo_url).await else {
+            log::debug!("No desktop release feed at {repo_url}");
+            continue;
+        };
+        let version = tag.trim_start_matches('v').to_string();
+        if !is_newer(&version, &current_version()) {
+            return Ok(None);
+        }
+
+        let names = fetch_asset_names(repo_url, &tag).await?;
+        let Some(asset_name) = pick_asset(&names) else {
+            return Ok(None);
+        };
+
+        // 下载地址由 tag + 资产名直接构造，无需 API
+        let url = format!("{repo_url}/releases/download/{tag}/{asset_name}");
+        return Ok(Some(LatestRelease {
+            version,
+            tag,
+            published_at,
+            url,
+            asset_name,
+        }));
     }
-
-    let names = fetch_asset_names(&tag).await?;
-    let Some(asset_name) = pick_asset(&names) else {
-        return Ok(None);
-    };
-
-    // 下载地址由 tag + 资产名直接构造，无需 API
-    let url = format!("{REPO_URL}/releases/download/{tag}/{asset_name}");
-    Ok(Some(LatestRelease {
-        version,
-        tag,
-        published_at,
-        url,
-        asset_name,
-    }))
+    Err("UPDATE_ATOM: no trusted desktop release feed available".to_string())
 }
 
 /// 安装包存放路径（AppData/updates/<asset_name>）
@@ -362,33 +366,6 @@ pub async fn open_installer(app_handle: &AppHandle, path: String) -> Result<(), 
         .map_err(|e| format!("UPDATE_OPEN: {e}"))
 }
 
-/// 关于对话框信息。
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DesktopAboutInfo {
-    pub version: String,
-    pub published_at: String,
-    pub copyright: String,
-    pub repo: String,
-    pub powered_by: String,
-}
-
-/// 关于信息：版本来自编译常量，发布时间每次实时查询最新 Release（不缓存），
-/// 查询失败则留空、不影响展示。
-pub async fn about() -> DesktopAboutInfo {
-    let published_at = fetch_latest_meta()
-        .await
-        .map(|(_, p)| p)
-        .unwrap_or_default();
-    DesktopAboutInfo {
-        version: current_version(),
-        published_at,
-        copyright: COPYRIGHT.to_string(),
-        repo: REPO_URL.to_string(),
-        powered_by: POWERED_BY.to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,9 +480,9 @@ mod tests {
     fn extract_asset_names_parses_download_links() {
         let tag = "v0.6.6";
         let html = r#"
-            <a href="/hairyf/deepseek-harness-desktop/releases/download/v0.6.6/x64-setup.exe">x</a>
-            <a href="/hairyf/deepseek-harness-desktop/releases/download/v0.6.6/x64_en-US.msi">y</a>
-            <a href="/hairyf/deepseek-harness-desktop/releases/download/v0.6.5/old.dmg">z</a>
+            <a href="/baihejiangnan/deepseek-harness-desktop/releases/download/v0.6.6/x64-setup.exe">x</a>
+            <a href="/baihejiangnan/deepseek-harness-desktop/releases/download/v0.6.6/x64_en-US.msi">y</a>
+            <a href="/baihejiangnan/deepseek-harness-desktop/releases/download/v0.6.5/old.dmg">z</a>
         "#;
         let names = extract_asset_names(html, tag);
         assert_eq!(names, vec!["x64-setup.exe", "x64_en-US.msi"]);

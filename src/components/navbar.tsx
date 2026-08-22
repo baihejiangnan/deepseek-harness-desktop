@@ -78,8 +78,6 @@ export default function Navbar({ iframeRef }: NavbarProps) {
   function handleHelpAction(key: string) {
     if (key === 'check-update')
       void desktopUpdate.openUpdateDialog()
-    else if (key === 'about')
-      void desktopUpdate.openAbout()
     else if (key === 'copy-run-logs')
       void copyRunLogs()
   }
@@ -191,14 +189,6 @@ export default function Navbar({ iframeRef }: NavbarProps) {
                     <Description>{t('menu.new_version')}</Description>
                   </If>
                 </span>
-              </Dropdown.Item>
-              <Dropdown.Item
-                className="rounded-md"
-                id="about"
-                textValue={t('menu.about')}
-                onAction={() => handleHelpAction('about')}
-              >
-                <Label>{t('menu.about')}</Label>
               </Dropdown.Item>
             </Dropdown.Menu>
           </Dropdown.Popover>

@@ -1,5 +1,6 @@
 use crate::config;
 use crate::service::cli;
+use crate::service::collab;
 use crate::service::download::{self, Installable};
 use crate::service::export;
 use crate::service::plugin;
@@ -23,6 +24,18 @@ fn ensure_launcher_update_context() -> Result<(), String> {
         Ok(())
     } else {
         Err("DSH_UPDATE_LAUNCHER_ONLY".to_string())
+    }
+}
+
+/// 协作编排是启动器专属能力：实例宿主窗口不能创建或取消编排会话。
+fn ensure_launcher_only() -> Result<(), String> {
+    if matches!(
+        crate::desktop::mode::current(),
+        crate::desktop::mode::RunMode::Launcher
+    ) {
+        Ok(())
+    } else {
+        Err("COLLAB_LAUNCHER_ONLY".to_string())
     }
 }
 
@@ -102,6 +115,15 @@ fn instance_home_is_running(
     for instance in registry.instances {
         if instance.dsh_home == target.dsh_home && instance_host_is_running(&instance.id)? {
             return Ok(Some(instance));
+        }
+    }
+    // The legacy launcher service is not represented in INSTANCE_HOSTS. It
+    // still owns the active Home, so profile writes must wait for it as well.
+    if workflow::has_owned_process() {
+        if let Some(active) = config::instance::active() {
+            if active.dsh_home == target.dsh_home {
+                return Ok(Some(active));
+            }
         }
     }
     Ok(None)
@@ -342,7 +364,12 @@ pub async fn export_instance_home(
 /// 从启动器派生一个独立实例宿主进程。宿主进程拥有自己的 Tauri 窗口、
 /// Harness 子进程和运行时端口，不与启动器进程共享 workflow 全局状态。
 #[tauri::command]
-pub async fn launch_instance_window(app_handle: AppHandle, id: String) -> Result<u32, String> {
+pub async fn launch_instance_window(
+    app_handle: AppHandle,
+    id: String,
+    minimized: Option<bool>,
+    port: Option<u16>,
+) -> Result<u32, String> {
     let registry = config::instance::list(&app_handle)?;
     let target = registry
         .instances
@@ -372,6 +399,12 @@ pub async fn launch_instance_window(app_handle: AppHandle, id: String) -> Result
         }
         hosts.remove(&id);
     }
+    // 端口必须在持有 hosts 锁时分配，串行化并发启动，避免两个实例宿主
+    // 同时探测到同一个“空闲”端口；协作编排传固定端口，其余路径自动探测。
+    let allocated_port = match port {
+        Some(port) => port,
+        None => crate::service::workflow::find_available_port(setting.port)?,
+    };
 
     // 会话等数据写入 DSH_HOME。多个宿主即使 Profile 不同，同时写同一个
     // Home 仍会使 session log 的提交序号交叉，最终出现 seq gap。
@@ -389,6 +422,10 @@ pub async fn launch_instance_window(app_handle: AppHandle, id: String) -> Result
     let exe = std::env::current_exe().map_err(|error| error.to_string())?;
     let mut command = std::process::Command::new(exe);
     command.args(["--mode", "instance", "--instance-id", &id]);
+    command.args(["--port", &allocated_port.to_string()]);
+    if minimized.unwrap_or(false) {
+        command.arg("--start-minimized");
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -420,7 +457,8 @@ pub fn focus_instance_window(id: String) -> Result<(), String> {
     #[cfg(windows)]
     {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            EnumWindows, SetForegroundWindow, ShowWindow, SW_RESTORE,
+            BringWindowToTop, EnumWindows, SetForegroundWindow, SetWindowPos, ShowWindow,
+            HWND_TOP, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_RESTORE, SW_SHOW,
         };
         let mut search = InstanceWindowSearch { pid, hwnd: None };
         unsafe {
@@ -430,7 +468,19 @@ pub fn focus_instance_window(id: String) -> Result<(), String> {
             );
             if let Some(hwnd) = search.hwnd {
                 ShowWindow(hwnd, SW_RESTORE);
-                SetForegroundWindow(hwnd);
+                ShowWindow(hwnd, SW_SHOW);
+                SetWindowPos(
+                    hwnd,
+                    HWND_TOP,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+                );
+                BringWindowToTop(hwnd);
+                // 后台启动器经过异步等待后可能已失去前台权限，多重置前提高成功率
+                let _ = SetForegroundWindow(hwnd);
                 return Ok(());
             }
         }
@@ -458,16 +508,68 @@ pub fn list_running_instances() -> Result<Vec<String>, String> {
     Ok(hosts.keys().cloned().collect())
 }
 
-/// 返回启动器当前托管实例的实际运行端口。
+/// 解析指定实例当前监听的实际端口：实例必须仍在启动器托管且端口确实在监听。
 ///
 /// 每个实例宿主把 Harness 的 PID/端口写入自己的 DSH Home 下的
 /// `.harness.pid`。只读取仍被实例宿主托管且端口仍在监听的记录，避免把
-/// 崩溃后的陈旧端口展示给用户。
+/// 崩溃后的陈旧端口用于 RPC。
+fn resolve_running_instance_port(
+    app_handle: &AppHandle,
+    instance_id: &str,
+) -> Result<u16, String> {
+    let registry = config::instance::list(&app_handle)?;
+    let instance = registry
+        .instances
+        .iter()
+        .find(|item| item.id == instance_id)
+        .ok_or_else(|| format!("INSTANCE_NOT_FOUND: {instance_id}"))?;
+    {
+        let mut hosts = instance_hosts()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        prune_instance_hosts(&mut hosts)?;
+        if !hosts.contains_key(instance_id) {
+            return Err(format!("COLLAB_INSTANCE_NOT_RUNNING: {instance_id}"));
+        }
+    }
+    let path = std::path::Path::new(&instance.dsh_home).join(".harness.pid");
+    let content = std::fs::read_to_string(path)
+        .map_err(|_| format!("COLLAB_INSTANCE_NOT_RUNNING: {instance_id}"))?;
+    let port = content
+        .lines()
+        .nth(1)
+        .and_then(|line| line.trim().parse::<u16>().ok())
+        .ok_or_else(|| format!("COLLAB_INSTANCE_NOT_RUNNING: {instance_id}"))?;
+    if !crate::service::workflow::utils::is_port_in_use(port) {
+        return Err(format!("COLLAB_INSTANCE_NOT_RUNNING: {instance_id}"));
+    }
+    Ok(port)
+}
+
+/// 等待实例宿主就绪并解析端口：实例宿主刚拉起时 `.harness.pid` 与监听端口
+/// 尚未写入，协作下发前需要短时重试，避免把启动中的实例误判为未运行。
+async fn wait_for_running_instance_port(
+    app_handle: &AppHandle,
+    instance_id: &str,
+) -> Result<u16, String> {
+    let mut last_error = format!("COLLAB_INSTANCE_NOT_RUNNING: {instance_id}");
+    for _ in 0..40 {
+        if let Ok(port) = resolve_running_instance_port(app_handle, instance_id) {
+            if crate::service::workflow::utils::is_dsh_running(port).await {
+                return Ok(port);
+            }
+            last_error = format!("COLLAB_INSTANCE_NOT_READY: {instance_id}");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+    }
+    Err(last_error)
+}
+
+/// 返回启动器当前托管实例的实际运行端口（界面展示与协作 RPC 共用同一解析）。
 #[tauri::command]
 pub fn get_running_instance_ports(
     app_handle: AppHandle,
 ) -> Result<std::collections::HashMap<String, u16>, String> {
-    let registry = config::instance::list(&app_handle)?;
     let mut hosts = instance_hosts()
         .lock()
         .unwrap_or_else(|error| error.into_inner());
@@ -477,25 +579,158 @@ pub fn get_running_instance_ports(
 
     let mut ports = std::collections::HashMap::new();
     for id in running_ids {
-        let Some(instance) = registry.instances.iter().find(|item| item.id == id) else {
-            continue;
-        };
-        let path = std::path::Path::new(&instance.dsh_home).join(".harness.pid");
-        let Ok(content) = std::fs::read_to_string(path) else {
-            continue;
-        };
-        let Some(port) = content
-            .lines()
-            .nth(1)
-            .and_then(|line| line.trim().parse::<u16>().ok())
-        else {
-            continue;
-        };
-        if crate::service::workflow::utils::is_port_in_use(port) {
+        if let Ok(port) = resolve_running_instance_port(&app_handle, &id) {
             ports.insert(id, port);
         }
     }
     Ok(ports)
+}
+
+/// 协作执行：在运行中的实例上创建会话并下发任务，返回会话与工作区 id。
+#[tauri::command]
+pub async fn collab_start_task(
+    app_handle: AppHandle,
+    instance_id: String,
+    task: String,
+) -> Result<collab::CollabTaskStart, String> {
+    ensure_launcher_only()?;
+    let port = wait_for_running_instance_port(&app_handle, &instance_id).await?;
+    collab::start_task(port, &task)
+        .await
+        .map_err(|error| format!("COLLAB_START_FAILED: {error}"))
+}
+
+/// 协作执行：轮询会话历史，turn/end 即本轮完成，并带回 assistant 文本产物。
+#[tauri::command]
+pub async fn collab_poll_task(
+    app_handle: AppHandle,
+    instance_id: String,
+    session_id: String,
+) -> Result<collab::CollabTaskStatus, String> {
+    ensure_launcher_only()?;
+    let port = resolve_running_instance_port(&app_handle, &instance_id)?;
+    collab::poll_task(port, &session_id)
+        .await
+        .map_err(|error| format!("COLLAB_POLL_FAILED: {error}"))
+}
+
+/// 协作执行：取消运行中会话的任务。
+#[tauri::command]
+pub async fn collab_cancel_task(
+    app_handle: AppHandle,
+    instance_id: String,
+    session_id: String,
+) -> Result<(), String> {
+    ensure_launcher_only()?;
+    let port = resolve_running_instance_port(&app_handle, &instance_id)?;
+    collab::cancel_task(port, &session_id)
+        .await
+        .map_err(|error| format!("COLLAB_CANCEL_FAILED: {error}"))
+}
+
+/// 读取上次保存的协作画布（节点/连线/视口），用于离开后恢复编排现场。
+#[tauri::command]
+pub async fn collab_load_graph(app_handle: AppHandle) -> Result<Option<serde_json::Value>, String> {
+    Ok(collab::load_graph(&app_handle))
+}
+
+/// 保存协作画布（含任务、产物与视口位置）。
+#[tauri::command]
+pub async fn collab_save_graph(
+    app_handle: AppHandle,
+    graph: serde_json::Value,
+) -> Result<(), String> {
+    collab::save_graph(&app_handle, graph)
+}
+
+/// 把协作契约（端口、角色、父子关系）写入工作区，返回契约文件路径。
+#[tauri::command]
+pub async fn collab_write_contract(
+    input: collab::CollabContractInput,
+) -> Result<String, String> {
+    ensure_launcher_only()?;
+    collab::write_contract(input)
+}
+
+/// 为参与协作的实例一次性分配互不冲突的固定端口（先分配端口，再写契约、再启动）。
+#[tauri::command]
+pub async fn collab_allocate_ports(
+    app_handle: AppHandle,
+    instance_ids: Vec<String>,
+) -> Result<Vec<collab::CollabPortAllocation>, String> {
+    ensure_launcher_only()?;
+    let registry = config::instance::list(&app_handle)?;
+    let mut unique_ids: Vec<String> = Vec::new();
+    for id in instance_ids {
+        if !unique_ids.contains(&id) {
+            unique_ids.push(id);
+        }
+    }
+    for id in &unique_ids {
+        if !registry.instances.iter().any(|item| item.id == *id) {
+            return Err(format!("INSTANCE_NOT_FOUND: {id}"));
+        }
+    }
+    let setting = config::get_store_dat_setting(&app_handle);
+    let allocations = {
+        // 与 launch_instance_window 共用 hosts 锁，保证“分配端口”和“启动实例”
+        // 不会并发探测到同一个空闲端口。
+        let mut hosts = instance_hosts()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        prune_instance_hosts(&mut hosts)?;
+        let mut used = std::collections::HashSet::new();
+        let mut start = setting.port;
+        let mut result = Vec::with_capacity(unique_ids.len());
+        for id in unique_ids {
+            let port = loop {
+                let candidate = crate::service::workflow::find_available_port(start)?;
+                if used.insert(candidate) {
+                    break candidate;
+                }
+                start = candidate.saturating_add(1);
+            };
+            result.push(collab::CollabPortAllocation {
+                instance_id: id,
+                port,
+            });
+        }
+        result
+    };
+    Ok(allocations)
+}
+
+/// 已保存的协作工作流列表（按更新时间倒序）。
+#[tauri::command]
+pub async fn collab_list_workflows(
+    app_handle: AppHandle,
+) -> Result<Vec<collab::WorkflowSummary>, String> {
+    Ok(collab::list_workflows(&app_handle))
+}
+
+/// 保存（或按同名更新）一个命名工作流。
+#[tauri::command]
+pub async fn collab_save_workflow(
+    app_handle: AppHandle,
+    name: String,
+    graph: serde_json::Value,
+) -> Result<collab::WorkflowSummary, String> {
+    collab::save_workflow(&app_handle, name, graph)
+}
+
+/// 读取命名工作流的完整图数据。
+#[tauri::command]
+pub async fn collab_load_workflow(
+    app_handle: AppHandle,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    collab::load_workflow(&app_handle, &id)
+}
+
+/// 删除命名工作流。
+#[tauri::command]
+pub async fn collab_delete_workflow(app_handle: AppHandle, id: String) -> Result<(), String> {
+    collab::delete_workflow(&app_handle, &id)
 }
 
 #[tauri::command]
@@ -627,6 +862,23 @@ pub async fn choose_dsh_home() -> Option<String> {
     {
         rfd::AsyncFileDialog::new()
             .set_title("Choose DSH_HOME")
+            .pick_folder()
+            .await
+            .map(|folder| folder.path().to_string_lossy().into_owned())
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// 选择协作工作区目录（所有参与 Agent 共享的工作区域）。
+#[tauri::command]
+pub async fn choose_collab_workspace() -> Option<String> {
+    #[cfg(windows)]
+    {
+        rfd::AsyncFileDialog::new()
+            .set_title("Choose collaboration workspace")
             .pick_folder()
             .await
             .map(|folder| folder.path().to_string_lossy().into_owned())
@@ -1227,12 +1479,6 @@ pub async fn download_desktop_update(
 #[tauri::command]
 pub async fn open_desktop_installer(app_handle: AppHandle, path: String) -> Result<(), String> {
     update::open_installer(&app_handle, path).await
-}
-
-/// 关于对话框信息（版本 / 发布时间 / 版权 / 仓库）
-#[tauri::command]
-pub async fn get_desktop_about() -> Result<update::DesktopAboutInfo, String> {
-    Ok(update::about().await)
 }
 
 /// 在系统浏览器中打开任意 http(s) 链接（更新说明 / 关于对话框仓库链接等）

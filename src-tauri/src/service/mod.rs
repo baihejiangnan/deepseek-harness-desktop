@@ -1,4 +1,5 @@
 pub mod cli;
+pub mod collab;
 pub mod download;
 pub mod export;
 pub mod plugin;

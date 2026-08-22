@@ -18,6 +18,7 @@ use crate::service::workflow;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::PathBuf;
+use std::process::Command;
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
 use super::installed::profile_dir;
@@ -179,6 +180,31 @@ pub async fn install(app_handle: &AppHandle, specs: &[String]) -> Result<(), Str
         envs.insert("PATH".to_string(), joined.to_string_lossy().into_owned());
     }
 
+    // 全新 Windows 安装通常没有 Git。DSH/pnpm 原生支持 HTTPS 压缩包，
+    // 因此仅在 Git 不可用时把安全的 github: 简写转换为 codeload 地址；
+    // 用户输入、日志和市场清单仍保留原始 spec，不执行任意 shell 文本。
+    let effective_specs = if git_available(&envs) {
+        normalized_specs.clone()
+    } else {
+        normalized_specs
+            .iter()
+            .map(|spec| github_archive_spec(spec).unwrap_or_else(|| spec.clone()))
+            .collect::<Vec<_>>()
+    };
+    if effective_specs != normalized_specs {
+        log::info!(
+            "Git is unavailable; using GitHub codeload archives for {:?}",
+            effective_specs
+        );
+        let _ = window.emit(
+            PLUGIN_INSTALL_LOG_EVENT,
+            PluginInstallLogPayload {
+                line: "[plugin] 未检测到 Git，GitHub 插件将使用安全的 codeload 压缩包安装"
+                    .to_string(),
+            },
+        );
+    }
+
     // 拼装命令行参数
     let mut args = vec![
         dsh_bin.as_os_str().to_os_string(),
@@ -187,7 +213,7 @@ pub async fn install(app_handle: &AppHandle, specs: &[String]) -> Result<(), Str
         OsString::from(config::get_active_profile()),
         OsString::from("add"),
     ];
-    args.extend(normalized_specs.iter().map(|s| OsString::from(s.as_str())));
+    args.extend(effective_specs.iter().map(|s| OsString::from(s.as_str())));
 
     let cwd = config::get_dsh_install_path(app_handle);
     // 日志打印实际传给 dsh 的 spec（此前打印 id 会误导排查：安装用的是 spec）
@@ -199,10 +225,10 @@ pub async fn install(app_handle: &AppHandle, specs: &[String]) -> Result<(), Str
     // 后重试，直至成功或再无键可加。
     let mut retries = 0usize;
     let mut repaired_lockfile = false;
-    let exit_code = loop {
+    let (exit_code, last_output) = loop {
         let (code, captured) = run_plugin_process(&node, &args, &cwd, &envs, &window).await?;
         if code == 0 {
-            break 0;
+            break (0, captured);
         }
 
         // pnpm refuses a frozen install when a git/tarball lock entry lacks
@@ -229,10 +255,11 @@ pub async fn install(app_handle: &AppHandle, specs: &[String]) -> Result<(), Str
 
         let new_keys = parse_allowlist_keys(&captured);
         if new_keys.is_empty() || retries >= MAX_ALLOW_LIST_RETRIES {
+            let detail = summarize_process_output(&captured);
             log::error!(
-                "dsh plugin install failed with exit code {code}; no more allowBuilds entries to add"
+                "dsh plugin install failed with exit code {code}; no allowBuilds retry available: {detail}"
             );
-            break code;
+            break (code, captured);
         }
 
         retries += 1;
@@ -247,12 +274,24 @@ pub async fn install(app_handle: &AppHandle, specs: &[String]) -> Result<(), Str
     };
 
     if exit_code != 0 {
-        log::error!("dsh plugin install failed with exit code {exit_code}");
+        let detail = summarize_process_output(&last_output);
+        if detail.is_empty() {
+            log::error!(
+                "dsh plugin install failed with exit code {exit_code}; no process output captured"
+            );
+        } else {
+            log::error!("dsh plugin install failed with exit code {exit_code}: {detail}");
+        }
         if crate::service::plugin::install_was_cancelled() {
             return Err("PLUGIN_INSTALL_CANCELLED: plugin installation was stopped".to_string());
         }
+        let suffix = if detail.is_empty() {
+            String::new()
+        } else {
+            format!(": {detail}")
+        };
         return Err(format!(
-            "PLUGIN_INSTALL_FAILED: dsh plugin exited with code {exit_code}"
+            "PLUGIN_INSTALL_FAILED: dsh plugin exited with code {exit_code}{suffix}"
         ));
     }
 
@@ -260,6 +299,66 @@ pub async fn install(app_handle: &AppHandle, specs: &[String]) -> Result<(), Str
 
     log::info!("Plugin packages installed successfully: {normalized_specs:?}");
     Ok(())
+}
+
+fn git_available(envs: &HashMap<String, String>) -> bool {
+    Command::new(if cfg!(windows) { "git.exe" } else { "git" })
+        .arg("--version")
+        .envs(envs)
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+fn summarize_process_output(output: &str) -> String {
+    const MAX_DETAIL: usize = 4000;
+    let detail = output.trim();
+    if detail.len() <= MAX_DETAIL {
+        return detail.to_string();
+    }
+    let start = detail.len() - MAX_DETAIL;
+    let boundary = detail
+        .char_indices()
+        .find(|(index, _)| *index >= start)
+        .map_or(0, |(index, _)| index);
+    format!("…{}", &detail[boundary..])
+}
+
+/// Convert the supported GitHub shorthand to the official codeload archive URL.
+/// Returns None for anything outside the strict owner/repository/ref grammar.
+fn github_archive_spec(spec: &str) -> Option<String> {
+    let value = spec.strip_prefix("github:")?;
+    let (repository, git_ref) = value.split_once('#').unwrap_or((value, "HEAD"));
+    let mut parts = repository.split('/');
+    let owner = parts.next()?;
+    let repo = parts.next()?;
+    if parts.next().is_some()
+        || !valid_github_segment(owner)
+        || !valid_github_segment(repo)
+        || git_ref.is_empty()
+        || git_ref.starts_with('/')
+        || git_ref.ends_with('/')
+        || git_ref.contains("//")
+        || git_ref
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+        || !git_ref
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/'))
+    {
+        return None;
+    }
+    Some(format!(
+        "https://codeload.github.com/{owner}/{repo}/tar.gz/{git_ref}"
+    ))
+}
+
+fn valid_github_segment(value: &str) -> bool {
+    !value.is_empty()
+        && value != "."
+        && value != ".."
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
 }
 
 /// Ask pnpm to regenerate missing tarball integrity fields without changing
@@ -377,11 +476,27 @@ pub async fn remove(app_handle: &AppHandle, plugin_id: &str) -> Result<(), Strin
         OsString::from(plugin_id),
     ];
     let cwd = config::get_dsh_install_path(app_handle);
-    let (exit_code, _) = run_plugin_process(&node, &args, &cwd, &envs, &window).await?;
+    let (exit_code, output) = run_plugin_process(&node, &args, &cwd, &envs, &window).await?;
     if exit_code != 0 {
+        let detail = summarize_process_output(&output);
+        log::error!(
+            "dsh plugin remove failed for {plugin_id:?} with exit code {exit_code}: {detail}"
+        );
+        let suffix = if detail.is_empty() {
+            String::new()
+        } else {
+            format!(": {detail}")
+        };
         return Err(format!(
-            "PLUGIN_REMOVE_FAILED: dsh exited with code {exit_code}"
+            "PLUGIN_REMOVE_FAILED: dsh exited with code {exit_code}{suffix}"
         ));
+    }
+
+    // The Windows terminal inspector adds a profile-local patch entry when the
+    // plugin is installed. DSH removes package dependencies, but it cannot know
+    // about that launcher-owned patch, so prune it after a successful removal.
+    if let Err(error) = workflow::win_inspector::apply(app_handle) {
+        log::warn!("failed to clean plugin integration after removal: {error}");
     }
     Ok(())
 }
@@ -699,7 +814,10 @@ fn add_allow_build_keys(app_handle: &AppHandle, keys: &[String]) -> Result<(), S
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_allow_line_key, parse_allowlist_keys, parse_manual_specs};
+    use super::{
+        extract_allow_line_key, github_archive_spec, parse_allowlist_keys, parse_manual_specs,
+        summarize_process_output,
+    };
 
     #[test]
     fn parses_community_commands_and_bare_specs() {
@@ -719,6 +837,29 @@ dsh plugin --profile web add "https://github.com/omdsh-dev/dsh-at-file/archive/r
     #[test]
     fn rejects_non_community_command_shape() {
         assert!(parse_manual_specs("dsh plugin add example").is_err());
+    }
+
+    #[test]
+    fn summarizes_long_process_output_from_the_end() {
+        let output = format!("{}错误", "x".repeat(5000));
+        let summary = summarize_process_output(&output);
+        assert!(summary.starts_with('…'));
+        assert!(summary.ends_with("错误"));
+        assert!(summary.len() <= 4003);
+    }
+
+    #[test]
+    fn converts_safe_github_specs_to_codeload_archives() {
+        assert_eq!(
+            github_archive_spec("github:owner/repo").as_deref(),
+            Some("https://codeload.github.com/owner/repo/tar.gz/HEAD")
+        );
+        assert_eq!(
+            github_archive_spec("github:owner/repo#feature/sidebar").as_deref(),
+            Some("https://codeload.github.com/owner/repo/tar.gz/feature/sidebar")
+        );
+        assert!(github_archive_spec("github:owner/../repo").is_none());
+        assert!(github_archive_spec("github:owner/repo#feature//bad").is_none());
     }
 
     #[test]

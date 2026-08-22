@@ -1,8 +1,4 @@
-import type {
-  DesktopAboutInfo,
-  DesktopDownloadProgress,
-  DesktopUpdateInfo,
-} from './types'
+import type { DesktopDownloadProgress, DesktopUpdateInfo } from './types'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import i18next from 'i18next'
@@ -39,10 +35,6 @@ export const desktopUpdate = defineStore({
     downloadProgress: 0,
     /** 更新对话框开关 */
     updateDialogOpen: false,
-    /** 关于对话框开关 */
-    aboutDialogOpen: false,
-    /** 关于对话框信息 */
-    about: null as DesktopAboutInfo | null,
     /** 用户已关闭提示的版本 tag（持久化，同版本不再弹 toast） */
     dismissedTag: readDismissedTag(),
   }),
@@ -108,23 +100,6 @@ export const desktopUpdate = defineStore({
 
     closeUpdateDialog() {
       this.updateDialogOpen = false
-    },
-
-    /** 打开关于对话框：拉取信息后展示 */
-    async openAbout() {
-      if (!this.about) {
-        try {
-          this.about = await invoke<DesktopAboutInfo>('get_desktop_about')
-        }
-        catch (err) {
-          console.warn('[DesktopUpdate] failed to load about info:', err)
-        }
-      }
-      this.aboutDialogOpen = true
-    },
-
-    closeAbout() {
-      this.aboutDialogOpen = false
     },
 
     /**

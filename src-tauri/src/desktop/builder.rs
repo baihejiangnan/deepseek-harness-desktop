@@ -204,22 +204,55 @@ pub fn build_instance_window(
     app: &tauri::AppHandle<Wry>,
     instance: &crate::config::instance::DshInstance,
     port: u16,
+    minimized: bool,
 ) -> tauri::Result<tauri::WebviewWindow<Wry>> {
     let url = Url::parse(&crate::config::get_dsh_service_url(port))
         .expect("DSH service URL is generated from a loopback address and numeric port");
-    let app_handle = app.clone();
-    let window = WebviewWindowBuilder::new(
-        app,
-        format!("instance-{}", instance.id),
-        WebviewUrl::External(url),
-    )
-    .title(format!("DSH - {}", instance.name))
-    .inner_size(1280.0, 800.0)
-    .min_inner_size(960.0, 640.0)
-    .resizable(true)
-    .on_new_window(move |url, features| on_new_window(app_handle.clone(), url, features))
-    .on_download(|webview, event| on_download(webview, event))
-    .build()?;
+    // WebView2 要求同一用户数据目录的并发创建使用相同环境选项，多个实例宿主
+    // 共享默认目录时偶发 0x80070057 创建失败；这里给每个实例分配独立数据目录，
+    // 并保留短重试兜底。
+    let mut built_window: Option<tauri::WebviewWindow<Wry>> = None;
+    let mut last_error: Option<tauri::Error> = None;
+    for attempt in 1..=3 {
+        let app_for_events = app.clone();
+        let webview_data_dir = crate::config::get_base_dir(app)
+            .join("webview2")
+            .join(&instance.id);
+        match WebviewWindowBuilder::new(
+            app,
+            format!("instance-{}", instance.id),
+            WebviewUrl::External(url.clone()),
+        )
+        .title(format!("DSH - {}", instance.name))
+        .inner_size(1280.0, 800.0)
+        .min_inner_size(960.0, 640.0)
+        .resizable(true)
+        .data_directory(webview_data_dir)
+        .on_new_window(move |url, features| on_new_window(app_for_events.clone(), url, features))
+        .on_download(|webview, event| on_download(webview, event))
+        .build()
+        {
+            Ok(window) => {
+                built_window = Some(window);
+                break;
+            }
+            Err(error) => {
+                log::warn!("Instance webview creation attempt {attempt} failed: {error}");
+                last_error = Some(error);
+                std::thread::sleep(std::time::Duration::from_millis(700));
+            }
+        }
+    }
+    let window = match built_window {
+        Some(window) => window,
+        // 重试循环至少执行一次，失败时必然有错误可返回
+        None => return Err(last_error.unwrap()),
+    };
+    // 隐藏窗口创建 WebView2 会失败（0x80070057），因此先正常创建窗口，
+    // 再最小化后台子 Agent；顶部主代理窗口保持正常显示。
+    if minimized {
+        window.minimize()?;
+    }
     Ok(window)
 }
 
@@ -235,6 +268,17 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::cmd::focus_instance_window,
         crate::bridge::cmd::list_running_instances,
         crate::bridge::cmd::get_running_instance_ports,
+        crate::bridge::cmd::collab_start_task,
+        crate::bridge::cmd::collab_poll_task,
+        crate::bridge::cmd::collab_cancel_task,
+        crate::bridge::cmd::collab_load_graph,
+        crate::bridge::cmd::collab_save_graph,
+        crate::bridge::cmd::collab_write_contract,
+        crate::bridge::cmd::collab_allocate_ports,
+        crate::bridge::cmd::collab_list_workflows,
+        crate::bridge::cmd::collab_save_workflow,
+        crate::bridge::cmd::collab_load_workflow,
+        crate::bridge::cmd::collab_delete_workflow,
         crate::bridge::cmd::stop_instance_window,
         crate::bridge::cmd::list_instances,
         crate::bridge::cmd::create_instance,
@@ -244,6 +288,7 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::cmd::get_instance_removal_impact,
         crate::bridge::cmd::get_instance_sharing,
         crate::bridge::cmd::choose_dsh_home,
+        crate::bridge::cmd::choose_collab_workspace,
         crate::bridge::cmd::shutdown_harness,
         crate::bridge::cmd::restart_harness,
         crate::bridge::cmd::get_dsh_status,
@@ -278,7 +323,6 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::cmd::check_desktop_update,
         crate::bridge::cmd::download_desktop_update,
         crate::bridge::cmd::open_desktop_installer,
-        crate::bridge::cmd::get_desktop_about,
         crate::bridge::cmd::open_external_url,
         crate::bridge::cmd::quit_app,
         crate::desktop::notification::show_native_notification,
@@ -308,6 +352,16 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
                     setup(app_handle.clone());
                 }
                 RunMode::Instance { id } => {
+                    // 协作编排由启动器分配固定端口并传给实例宿主；未指定时沿用自动探测。
+                    let mut args = std::env::args().skip(1);
+                    while let Some(arg) = args.next() {
+                        if arg == "--port" {
+                            if let Some(port) = args.next().and_then(|value| value.parse::<u16>().ok()) {
+                                crate::service::workflow::set_requested_port(port);
+                            }
+                            break;
+                        }
+                    }
                     let instance = crate::config::instance::find(&app_handle, &id)
                         .map_err(std::io::Error::other)?;
                     crate::config::instance::set_active(Some(instance.clone()));
@@ -317,7 +371,23 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
                     .map_err(std::io::Error::other)?;
                     let port = crate::service::workflow::runtime_port()
                         .ok_or_else(|| std::io::Error::other("INSTANCE_PORT_UNAVAILABLE"))?;
-                    build_instance_window(&app_handle, &instance, port)?;
+                    // 等 DSH Web 真正可访问再建窗，避免 WebView 先加载到
+                    // ERR_CONNECTION_REFUSED 错误页；超时仍开窗以便诊断。
+                    let web_ready = tauri::async_runtime::block_on(async {
+                        crate::service::workflow::wait_until_web_ready(
+                            port,
+                            // 多个实例并发冷启动较慢，放宽等待时间
+                            std::time::Duration::from_secs(90),
+                        )
+                        .await
+                    });
+                    if !web_ready {
+                        log::warn!(
+                            "DSH web service did not become ready within 90s (port {port}); opening window anyway"
+                        );
+                    }
+                    let start_minimized = crate::desktop::mode::window_start_minimized();
+                    build_instance_window(&app_handle, &instance, port, start_minimized)?;
                     crate::service::scheduler::start(&app_handle);
                 }
             }

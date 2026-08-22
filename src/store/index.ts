@@ -17,7 +17,6 @@ export const store = {
 
 export { desktopUpdate } from './modules/desktop-update'
 export type {
-  DesktopAboutInfo,
   DesktopDownloadProgress,
   DesktopUpdateInfo,
 } from './modules/desktop-update'

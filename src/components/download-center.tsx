@@ -285,6 +285,7 @@ function getCatalog(force: boolean): Promise<PluginCatalog> {
 export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) {
   const { t, i18n } = useTranslation()
   const { registry, runningInstanceIds } = useStore(store.launcher)
+  const { serviceRunning } = useStore(store.harness)
   const [targetId, setTargetId] = useState<string | null>(registry.activeInstanceId)
   const [resourceView, setResourceView] = useState<ResourceView>('plugins')
   const [catalog, setCatalog] = useState<PluginCatalog | null>(null)
@@ -321,7 +322,10 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
   const fallbackTargetId = registry.activeInstanceId ?? registry.instances[0]?.id ?? null
   const resolvedTargetId = targetId && registry.instances.some(instance => instance.id === targetId) ? targetId : fallbackTargetId
   const target = registry.instances.find(instance => instance.id === resolvedTargetId) ?? null
-  const targetRunning = target != null && runningInstanceIds.includes(target.id)
+  // Profile writes are Home-scoped: a sibling instance with the same Home can
+  // still be using the lockfile/session files even when the selected instance
+  // itself is stopped.
+  const targetHomeRunning = target != null && (registry.instances.some(instance => instance.dshHome === target.dshHome && runningInstanceIds.includes(instance.id)) || (serviceRunning && registry.activeInstanceId === target.id))
   const language = i18n.language.toLowerCase().startsWith('zh') ? 'zh' : 'en'
   const pluginRemoveState = useOverlayState({
     isOpen: pendingPluginRemove != null,
@@ -377,7 +381,7 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
   }
 
   async function toggleInstalledPlugin(plugin: InstalledPlugin) {
-    if (!target || targetRunning || installing || pluginActionBusy)
+    if (!target || targetHomeRunning || installing || pluginActionBusy)
       return
     setPluginActionBusy(plugin.id)
     setError('')
@@ -394,7 +398,7 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
   }
 
   async function removeInstalledPlugin() {
-    if (!target || !pendingPluginRemove || targetRunning || installing || pluginActionBusy)
+    if (!target || !pendingPluginRemove || targetHomeRunning || installing || pluginActionBusy)
       return
     setPluginActionBusy(pendingPluginRemove.id)
     setError('')
@@ -549,7 +553,7 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
   }
 
   async function installCatalogPlugin(plugin: CatalogPlugin) {
-    if (!target || targetRunning || installing)
+    if (!target || targetHomeRunning || installing)
       return
     setInstalling(true)
     setInstallingName(plugin.name)
@@ -572,7 +576,7 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
   }
 
   async function installManualPackages() {
-    if (!target || targetRunning || installing)
+    if (!target || targetHomeRunning || installing)
       return
     if (!specs.trim())
       return
@@ -596,7 +600,7 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
   }
 
   async function installPack(packId: string): Promise<PluginPackInstallResult> {
-    if (!target || targetRunning || installing)
+    if (!target || targetHomeRunning || installing)
       throw new Error('PLUGIN_PACK_TARGET_UNAVAILABLE')
     setInstalling(true)
     setCancellingInstall(false)
@@ -769,7 +773,7 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
           </div>
 
           {!target && <div className="mb-5 rounded-md border border-[#ead39e] bg-[#fff8e8] px-4 py-3 text-sm text-[#72521b]">{t('download.create_instance_first')}</div>}
-          {targetRunning && <div className="mb-5 rounded-md border border-[#ead39e] bg-[#fff8e8] px-4 py-3 text-sm text-[#72521b]">{t('download.stop_instance_first')}</div>}
+          {targetHomeRunning && <div className="mb-5 rounded-md border border-[#ead39e] bg-[#fff8e8] px-4 py-3 text-sm text-[#72521b]">{t('download.stop_home_first')}</div>}
           {catalogError && <div className="mb-5 rounded-md border border-danger/30 bg-danger/5 px-4 py-3 text-xs text-danger">{catalogError}</div>}
           {resourceView === 'packs' && packCatalogError && <div className="mb-5 rounded-md border border-danger/30 bg-danger/5 px-4 py-3 text-xs text-danger">{packCatalogError}</div>}
           {error && <div className="mb-5 rounded-md border border-danger/30 bg-danger/5 px-4 py-3 text-xs text-danger">{error}</div>}
@@ -846,7 +850,7 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
                               <span className="truncate text-[10px] text-[var(--launcher-muted)]">{plugin.npm ?? plugin.install.split(' ').at(-1)}</span>
                               <div className="flex items-center gap-1">
                                 {plugin.url && <Button isIconOnly size="sm" variant="ghost" className="size-7 min-w-7 rounded-md" aria-label={t('download.open_repo')} onPress={() => { void openRepo(plugin.url) }}><ArrowUpRightFromSquare className="size-3.5" /></Button>}
-                                <Button size="sm" className="h-7 rounded-md bg-[var(--launcher-brand)] px-3 text-xs text-white" isDisabled={installed || installing || !target || targetRunning} onPress={() => { void installCatalogPlugin(plugin) }}>{installed ? t('download.installed') : installingName === plugin.name ? t('download.installing') : t('download.install')}</Button>
+                                <Button size="sm" className="h-7 rounded-md bg-[var(--launcher-brand)] px-3 text-xs text-white" isDisabled={installed || installing || !target || targetHomeRunning} onPress={() => { void installCatalogPlugin(plugin) }}>{installed ? t('download.installed') : installingName === plugin.name ? t('download.installing') : t('download.install')}</Button>
                               </div>
                             </div>
                           </article>
@@ -890,8 +894,8 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
                           {t('download.advanced_profile_hint', { instance: target.name, profile: target.profile })}
                         </div>
                       )}
-                      <textarea className="mt-3 min-h-20 w-full resize-y rounded-md border border-[var(--launcher-border)] bg-white px-3 py-2 font-mono text-xs outline-none focus:border-[var(--launcher-brand)]" placeholder={t('download.spec_placeholder')} value={specs} onChange={event => setSpecs(event.target.value)} disabled={!target || targetRunning || installing} />
-                      <div className="mt-3 flex justify-end"><Button className="h-9 rounded-md bg-[var(--launcher-brand)] px-5 text-white" isDisabled={!specs.trim() || installing || !target || targetRunning} onPress={() => { void installManualPackages() }}>{installing ? t('download.installing') : t('download.install_selected')}</Button></div>
+                      <textarea className="mt-3 min-h-20 w-full resize-y rounded-md border border-[var(--launcher-border)] bg-white px-3 py-2 font-mono text-xs outline-none focus:border-[var(--launcher-brand)]" placeholder={t('download.spec_placeholder')} value={specs} onChange={event => setSpecs(event.target.value)} disabled={!target || targetHomeRunning || installing} />
+                      <div className="mt-3 flex justify-end"><Button className="h-9 rounded-md bg-[var(--launcher-brand)] px-5 text-white" isDisabled={!specs.trim() || installing || !target || targetHomeRunning} onPress={() => { void installManualPackages() }}>{installing ? t('download.installing') : t('download.install_selected')}</Button></div>
                     </details>
                   </section>
                 </>
@@ -904,7 +908,7 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
                     detail={packDetail}
                     detailLoading={packDetailLoading}
                     target={target}
-                    targetRunning={targetRunning}
+                    targetRunning={targetHomeRunning}
                     installed={plugins}
                     installing={installing}
                     installingId={packInstallingId}
@@ -974,11 +978,11 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
                         </div>
                         <div className="flex items-center gap-1">
                           {plugin.repoUrl && <Button isIconOnly size="sm" variant="ghost" className="size-7 min-w-7 rounded-md" aria-label={t('download.open_repo')} onPress={() => { void openRepo(plugin.repoUrl) }}><ArrowUpRightFromSquare className="size-3.5" /></Button>}
-                          <Button size="sm" variant="outline" className="h-7 rounded-md border-[var(--launcher-brand)] px-2 text-[10px] text-[var(--launcher-brand-strong)]" isDisabled={busy || pluginActionBusy !== '' || targetRunning || installing} onPress={() => { void toggleInstalledPlugin(plugin) }}>
+                          <Button size="sm" variant="outline" className="h-7 rounded-md border-[var(--launcher-brand)] px-2 text-[10px] text-[var(--launcher-brand-strong)]" isDisabled={busy || pluginActionBusy !== '' || targetHomeRunning || installing} onPress={() => { void toggleInstalledPlugin(plugin) }}>
                             <Power className="size-3" />
                             {plugin.bundled ? t('launcher.plugin_disable') : t('launcher.plugin_enable')}
                           </Button>
-                          <Button isIconOnly size="sm" variant="ghost" className="size-7 min-w-7 rounded-md text-danger" aria-label={t('launcher.plugin_remove')} isDisabled={pluginActionBusy !== '' || targetRunning || installing} onPress={() => setPendingPluginRemove(plugin)}>
+                          <Button isIconOnly size="sm" variant="ghost" className="size-7 min-w-7 rounded-md text-danger" aria-label={t('launcher.plugin_remove')} isDisabled={pluginActionBusy !== '' || targetHomeRunning || installing} onPress={() => setPendingPluginRemove(plugin)}>
                             <TrashBin className="size-3.5" />
                           </Button>
                         </div>

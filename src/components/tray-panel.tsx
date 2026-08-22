@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import type { DshInstance, InstanceRegistry } from '@/store/modules/launcher/types'
-import { ArrowRotateRight, CircleInfo, Play, Power, Rocket } from '@gravity-ui/icons'
+import { ArrowRotateRight, Gear, Play, Power, Rocket } from '@gravity-ui/icons'
 import { invoke } from '@tauri-apps/api/core'
 import { emit } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -65,18 +65,39 @@ export default function TrayPanel() {
   }
 
   async function openLauncher() {
-    await emit('tray-open-launcher')
-    await hidePanel()
+    try {
+      await emit('tray-open-launcher')
+      await hidePanel()
+    }
+    catch (cause) {
+      const message = String(cause)
+      setError(message)
+      toast(message, { placement: 'top', variant: 'warning' })
+    }
   }
 
   async function checkUpdate() {
-    await emit('tray-check-dsh-update')
-    await hidePanel()
+    try {
+      await emit('tray-check-dsh-update')
+      await hidePanel()
+    }
+    catch (cause) {
+      const message = String(cause)
+      setError(message)
+      toast(message, { placement: 'top', variant: 'warning' })
+    }
   }
 
-  async function openAbout() {
-    await emit('tray-open-about')
-    await hidePanel()
+  async function openSettings() {
+    try {
+      await emit('tray-open-settings')
+      await hidePanel()
+    }
+    catch (cause) {
+      const message = String(cause)
+      setError(message)
+      toast(message, { placement: 'top', variant: 'warning' })
+    }
   }
 
   async function quit() {
@@ -140,7 +161,7 @@ export default function TrayPanel() {
         <div className="grid grid-cols-3 gap-1.5">
           <TrayAction icon={<Rocket />} label={t('tray.open_launcher')} onClick={() => { void openLauncher() }} />
           <TrayAction icon={<ArrowRotateRight />} label={t('tray.check_update')} onClick={() => { void checkUpdate() }} />
-          <TrayAction icon={<CircleInfo />} label={t('tray.about')} onClick={() => { void openAbout() }} />
+          <TrayAction icon={<Gear />} label={t('tray.settings')} onClick={() => { void openSettings() }} />
         </div>
 
         <TraySection title={t('tray.running_title')} count={running.length}>

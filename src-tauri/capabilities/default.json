@@ -2,11 +2,12 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the trusted desktop shell. The remote Harness iframe communicates only through the validated postMessage bridge.",
-  "windows": ["main", "instance-*"],
+  "windows": ["main", "tray-menu", "instance-*"],
   "permissions": [
     "core:default",
     "core:event:allow-listen",
     "core:event:allow-unlisten",
+    "core:event:allow-emit",
     "core:app:allow-version",
     "core:app:allow-default-window-icon",
     "core:window:default",
