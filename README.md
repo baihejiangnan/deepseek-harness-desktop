@@ -6,7 +6,7 @@
 
 > 一个启动器，N 个完全隔离的 DSH 实例；需要时，它们还能并肩作战。
 
-![version](https://img.shields.io/badge/version-0.0.3-8b5cf6)
+![version](https://img.shields.io/badge/version-0.0.4-8b5cf6)
 ![license](https://img.shields.io/badge/license-MIT%2Bnon--commercial-4caf50)
 ![platform](https://img.shields.io/badge/platform-Windows%20x64-0078d6)
 ![tauri](https://img.shields.io/badge/Tauri-2-24c8db)

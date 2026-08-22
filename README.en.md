@@ -6,7 +6,7 @@
 
 > One launcher, N fully isolated DSH instances. And when you need them to, they work as a team.
 
-![version](https://img.shields.io/badge/version-0.0.3-8b5cf6)
+![version](https://img.shields.io/badge/version-0.0.4-8b5cf6)
 ![license](https://img.shields.io/badge/license-MIT%2Bnon--commercial-4caf50)
 ![platform](https://img.shields.io/badge/platform-Windows%20x64-0078d6)
 ![tauri](https://img.shields.io/badge/Tauri-2-24c8db)
