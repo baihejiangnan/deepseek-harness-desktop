@@ -48,9 +48,9 @@ tar = "0.4"
 async-trait = "0.1"
 dunce = "1"
 tokio = { version = "1", features = [ "full" ] }
+rfd = "0.16"
 
 [target.'cfg(windows)'.dependencies]
-rfd = "0.16"
 webview2-com = "0.38"
 windows-core = "0.61"
 windows-sys = { version = "0.61", features = [
