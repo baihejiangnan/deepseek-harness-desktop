@@ -73,13 +73,34 @@ Split a big job across several agents with different strengths, each advancing i
 ## Screenshots
 
 <p align="center">
-  <img src="docs/images/preview/multi-instance-parallel.png" width="48%" alt="Parallel instances" />
-  <img src="docs/images/preview/plugin-pack-download.png" width="48%" alt="Plugin pack download" />
+  <img src="docs/images/preview/instance-create.png" width="48%" alt="Create an instance" />
+  <img src="docs/images/preview/instance-launch.png" width="48%" alt="Launch an instance" />
 </p>
+<p align="center"><sub>Create an instance ｜ Launch an instance</sub></p>
 <p align="center">
-  <img src="docs/images/preview/plugin-management.png" width="48%" alt="Plugin management" />
-  <img src="docs/images/preview/theme-options.png" width="48%" alt="Theme options" />
+  <img src="docs/images/preview/collaboration-canvas.png" width="48%" alt="Collaboration canvas" />
+  <img src="docs/images/preview/workflow-reuse.png" width="48%" alt="Workflow reuse" />
 </p>
+<p align="center"><sub>Collaboration canvas for building your workflows ｜ Reuse a workflow you already created</sub></p>
+<p align="center">
+  <img src="docs/images/preview/plugin-pack-download.png" width="48%" alt="Plugin pack download" />
+  <img src="docs/images/preview/plugin-pack-market.png" width="48%" alt="Plugin-pack marketplace" />
+</p>
+<p align="center"><sub>Plugin pack download ｜ Plugin-pack marketplace: a second-level community inside the plugin community for downloading and sharing plugin combos</sub></p>
+<p align="center">
+  <img src="docs/images/preview/export-config.png" width="48%" alt="Export user configuration" />
+  <img src="docs/images/preview/logs-copy.png" width="48%" alt="One-click copy of run logs" />
+</p>
+<p align="center"><sub>Export user configuration ｜ One-click copy of full run logs to quickly pinpoint plugin-related instance errors</sub></p>
+<p align="center">
+  <img src="docs/images/preview/dual-isolation.png" width="48%" alt="Dual isolation" />
+  <img src="docs/images/preview/settings-flexible-startup.png" width="48%" alt="Lean config & flexible startup" />
+</p>
+<p align="center"><sub>Dual isolation, resilient to nearly any DSH update ｜ Lean config: use the multi-instance mechanism to flexibly fix startup logic when errors occur</sub></p>
+<p align="center">
+  <img src="docs/images/preview/palette-launcher.png" width="48%" alt="Personalized launcher palette" />
+</p>
+<p align="center"><sub>Personalized launcher palette</sub></p>
 
 ## Features
 
@@ -118,7 +139,10 @@ The launcher only *manages*; it never touches DSH core: no rewriting of DSH's we
 
 ## Quick start
 
-Download the `x64-setup.exe` installer from [GitHub Releases](https://github.com/baihejiangnan/deepseek-harness-desktop/releases), install, and launch from the Start menu or desktop shortcut. The first run prepares the Node.js runtime and the DSH runtime over the network.
+- **Installer**: download `x64-setup.exe` from [GitHub Releases](https://github.com/baihejiangnan/deepseek-harness-desktop/releases), install, and launch from the Start menu or desktop shortcut.
+- **Portable (Windows x64)**: download [deepseek-harness-desktop.exe](https://raw.githubusercontent.com/baihejiangnan/deepseek-harness-desktop/master/release/windows/deepseek-harness-desktop.exe) and double-click to run — no installation required.
+
+The first run prepares the Node.js runtime and the DSH runtime over the network.
 
 > The primary build target is Windows x64; macOS / Linux bundles must be built on their respective platforms.
 
@@ -130,7 +154,7 @@ pnpm tauri dev                   # development
 pnpm tauri build --bundles nsis  # Windows installer
 ```
 
-The installer lands in `src-tauri/target/release/bundle/nsis/`. Development details: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+The installer lands in `src-tauri/target/release/bundle/nsis/`. A portable Windows exe (double-click to run, no installation required) is also available: [deepseek-harness-desktop.exe](https://raw.githubusercontent.com/baihejiangnan/deepseek-harness-desktop/master/release/windows/deepseek-harness-desktop.exe). Development details: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## Privacy
 

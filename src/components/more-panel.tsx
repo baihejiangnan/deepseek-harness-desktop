@@ -212,6 +212,14 @@ function LinksSection() {
       href: 'https://github.com/baihejiangnan/dsh-plugin-pack',
       mark: 'PACK',
     },
+    {
+      id: 'pcl',
+      title: t('launcher.more_links.pcl'),
+      description: t('launcher.more_links.pcl_description'),
+      url: 'github.com/Meloong-Git/PCL',
+      href: 'https://github.com/Meloong-Git/PCL',
+      mark: 'PCL',
+    },
   ]
   return (
     <main className="p-6 md:p-8">
@@ -262,6 +270,7 @@ function AcknowledgementsSection() {
     { id: 'vite', name: 'Vite', description: t('launcher.acknowledgements.vite'), url: 'github.com/vitejs/vite', href: 'https://github.com/vitejs/vite', mark: 'V' },
     { id: 'heroui', name: 'HeroUI', description: t('launcher.acknowledgements.heroui'), url: 'github.com/heroui-inc/heroui', href: 'https://github.com/heroui-inc/heroui', mark: 'UI' },
     { id: 'i18next', name: 'i18next', description: t('launcher.acknowledgements.i18next'), url: 'github.com/i18next/i18next', href: 'https://github.com/i18next/i18next', mark: 'I18N' },
+    { id: 'pcl', name: 'PCL', description: t('launcher.acknowledgements.pcl'), url: 'github.com/Meloong-Git/PCL', href: 'https://github.com/Meloong-Git/PCL', mark: 'PCL' },
   ]
 
   const renderEntries = (entries: typeof projects) => (

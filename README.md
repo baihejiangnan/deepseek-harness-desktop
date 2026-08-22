@@ -71,13 +71,34 @@ DSH 会把一切写进 `DSH_HOME`：
 ## 界面预览
 
 <p align="center">
-  <img src="docs/images/preview/multi-instance-parallel.png" width="48%" alt="多实例并行运行" />
-  <img src="docs/images/preview/plugin-pack-download.png" width="48%" alt="插件包下载" />
+  <img src="docs/images/preview/instance-create.png" width="48%" alt="新建实例界面" />
+  <img src="docs/images/preview/instance-launch.png" width="48%" alt="启动实例界面" />
 </p>
+<p align="center"><sub>新建实例界面 ｜ 启动实例界面</sub></p>
 <p align="center">
-  <img src="docs/images/preview/plugin-management.png" width="48%" alt="插件管理" />
-  <img src="docs/images/preview/theme-options.png" width="48%" alt="主题配色" />
+  <img src="docs/images/preview/collaboration-canvas.png" width="48%" alt="多实例协作画布" />
+  <img src="docs/images/preview/workflow-reuse.png" width="48%" alt="工作流复用" />
 </p>
+<p align="center"><sub>多实例协作画布，创作你的工作流 ｜ 创建好的工作流下次直接复用</sub></p>
+<p align="center">
+  <img src="docs/images/preview/plugin-pack-download.png" width="48%" alt="插件包下载" />
+  <img src="docs/images/preview/plugin-pack-market.png" width="48%" alt="插件包市场" />
+</p>
+<p align="center"><sub>插件包下载 ｜ 插件包市场：在插件社区下建立二级社区插件包，下载和分享插件组合</sub></p>
+<p align="center">
+  <img src="docs/images/preview/export-config.png" width="48%" alt="导出用户配置" />
+  <img src="docs/images/preview/logs-copy.png" width="48%" alt="运行日志一键复制" />
+</p>
+<p align="center"><sub>导出用户配置界面 ｜ 全局运行日志一键复制，轻松定位插件导致的实例报错</sub></p>
+<p align="center">
+  <img src="docs/images/preview/dual-isolation.png" width="48%" alt="双隔离机制" />
+  <img src="docs/images/preview/settings-flexible-startup.png" width="48%" alt="精简配置与灵活启动" />
+</p>
+<p align="center"><sub>双隔离机制，几乎兼容 DSH 的各种更新 ｜ 精简配置，出现错误时利用多实例机制灵活修复启动逻辑</sub></p>
+<p align="center">
+  <img src="docs/images/preview/palette-launcher.png" width="48%" alt="个性化调色盘启动器" />
+</p>
+<p align="center"><sub>个性化调色盘启动器</sub></p>
 
 ## 功能一览
 
@@ -114,7 +135,10 @@ DSH 会把一切写进 `DSH_HOME`：
 
 ## 快速开始
 
-从 [GitHub Releases](https://github.com/baihejiangnan/deepseek-harness-desktop/releases) 下载 `x64-setup.exe` 安装器，安装后从开始菜单或桌面快捷方式启动。首次运行需要联网准备 Node.js Runtime 和 DSH Runtime。
+- **安装版**：从 [GitHub Releases](https://github.com/baihejiangnan/deepseek-harness-desktop/releases) 下载 `x64-setup.exe` 安装器，安装后从开始菜单或桌面快捷方式启动。
+- **免安装版（Windows x64）**：直接下载 [deepseek-harness-desktop.exe](https://raw.githubusercontent.com/baihejiangnan/deepseek-harness-desktop/master/release/windows/deepseek-harness-desktop.exe)，双击即可运行，无需安装。
+
+首次运行需要联网准备 Node.js Runtime 和 DSH Runtime。
 
 > 当前主构建目标为 Windows x64；macOS / Linux 发行包需在对应平台自行构建。
 
@@ -126,7 +150,7 @@ pnpm tauri dev                 # 开发调试
 pnpm tauri build --bundles nsis   # 产出 Windows 安装包
 ```
 
-安装包输出到 `src-tauri/target/release/bundle/nsis/`。开发细节见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
+安装包输出到 `src-tauri/target/release/bundle/nsis/`。Windows 免安装版 exe（直接双击运行，无需安装）可直接下载：[deepseek-harness-desktop.exe](https://raw.githubusercontent.com/baihejiangnan/deepseek-harness-desktop/master/release/windows/deepseek-harness-desktop.exe)。开发细节见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
 
 ## 隐私边界
 
