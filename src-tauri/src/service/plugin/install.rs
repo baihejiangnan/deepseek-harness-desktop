@@ -126,7 +126,7 @@ pub async fn install(app_handle: &AppHandle, specs: &[String]) -> Result<(), Str
     // 确保 pnpm/dsh shim 存在
     cli::ensure_shims(app_handle)?;
 
-    let node = config::get_node_binary_path(app_handle);
+    let node = config::get_dsh_node_path(app_handle);
     let dsh_bin = config::get_dsh_binary_path(app_handle);
     if !node.exists() {
         return Err("NODE_NOT_FOUND: Node.js runtime missing".to_string());
@@ -215,7 +215,7 @@ pub async fn install(app_handle: &AppHandle, specs: &[String]) -> Result<(), Str
     ];
     args.extend(effective_specs.iter().map(|s| OsString::from(s.as_str())));
 
-    let cwd = config::get_dsh_install_path(app_handle);
+    let cwd = config::get_dsh_working_dir(app_handle);
     // 日志打印实际传给 dsh 的 spec（此前打印 id 会误导排查：安装用的是 spec）
     log::info!("Running dsh plugin install for {normalized_specs:?}");
 
@@ -436,7 +436,7 @@ pub async fn remove(app_handle: &AppHandle, plugin_id: &str) -> Result<(), Strin
     }
 
     cli::ensure_shims(app_handle)?;
-    let node = config::get_node_binary_path(app_handle);
+    let node = config::get_dsh_node_path(app_handle);
     let dsh_bin = config::get_dsh_binary_path(app_handle);
     if !node.exists() {
         return Err("NODE_NOT_FOUND: Node.js runtime missing".to_string());
@@ -480,7 +480,7 @@ pub async fn remove(app_handle: &AppHandle, plugin_id: &str) -> Result<(), Strin
         OsString::from("remove"),
         OsString::from(plugin_id),
     ];
-    let cwd = config::get_dsh_install_path(app_handle);
+    let cwd = config::get_dsh_working_dir(app_handle);
     let (exit_code, output) = run_plugin_process(&node, &args, &cwd, &envs, &window).await?;
     if exit_code != 0 {
         let detail = summarize_process_output(&output);

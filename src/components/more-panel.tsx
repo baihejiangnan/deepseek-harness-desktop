@@ -15,6 +15,17 @@ interface RuntimeInfo {
   dsh_version: string | null
 }
 
+interface DshRuntime {
+  id: string
+  source: 'launcher' | 'npm' | 'pnpm' | 'external'
+  entryPath: string
+  version: string | null
+  status: 'ready' | 'missing_node' | 'incompatible_node' | 'invalid_package'
+  writable: boolean
+  updateSupported: boolean
+  selected: boolean
+}
+
 export default function MorePanel() {
   const { t } = useTranslation()
   const [section, setSection] = useState<MoreSection>('updates')
@@ -59,10 +70,34 @@ function UpdatesSection() {
   const { t } = useTranslation()
   const { updateInfo, checking, updating, checkError } = useStore(updater)
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null)
+  const [runtimes, setRuntimes] = useState<DshRuntime[]>([])
+  const [switchingRuntime, setSwitchingRuntime] = useState(false)
 
   useEffect(() => {
     void invoke<RuntimeInfo>('get_runtime_info').then(setRuntime).catch(() => {})
+    void invoke<DshRuntime[]>('list_dsh_runtimes').then(setRuntimes).catch(() => {})
   }, [updating])
+
+  async function selectRuntime(runtimeId: string) {
+    setSwitchingRuntime(true)
+    try {
+      await invoke('select_dsh_runtime', { runtimeId })
+      const [nextInfo, nextRuntimes] = await Promise.all([
+        invoke<RuntimeInfo>('get_runtime_info'),
+        invoke<DshRuntime[]>('list_dsh_runtimes'),
+      ])
+      setRuntime(nextInfo)
+      setRuntimes(nextRuntimes)
+      await updater.checkForUpdate()
+      toast(t('launcher.more_updates.runtime_selected'), { variant: 'accent', placement: 'bottom end' })
+    }
+    catch (error) {
+      toast(t('launcher.more_updates.runtime_select_failed'), { description: String(error), variant: 'danger', placement: 'bottom end' })
+    }
+    finally {
+      setSwitchingRuntime(false)
+    }
+  }
 
   const status = updating
     ? t('update.dsh_updating')
@@ -109,7 +144,11 @@ function UpdatesSection() {
 
           {updateInfo && !updating && (
             <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--launcher-brand)]/25 bg-[var(--launcher-selected)] px-4 py-3 text-sm">
-              <span>{t('launcher.more_updates.available_detail', { tag: updateInfo.tag, commit: updateInfo.commit.slice(0, 7) })}</span>
+              <span>
+                {updateInfo.source === 'npm'
+                  ? t('launcher.more_updates.available_detail_npm', { tag: updateInfo.tag })
+                  : t('launcher.more_updates.available_detail', { tag: updateInfo.tag, commit: updateInfo.commit?.slice(0, 7) })}
+              </span>
               <Button className="h-8 rounded-md" variant="secondary" onPress={() => { void updater.handleUpdate() }}>{t('update.now')}</Button>
             </div>
           )}
@@ -117,6 +156,32 @@ function UpdatesSection() {
           {checkError && !checking && (
             <p className="mt-4 text-xs leading-5 text-danger">{t('launcher.more_updates.failed_hint')}</p>
           )}
+        </section>
+
+        <section className="mt-5 rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)] p-6">
+          <h2 className="m-0 text-sm font-semibold">{t('launcher.more_updates.runtime_title')}</h2>
+          <p className="mt-1 text-xs leading-5 text-[var(--launcher-muted)]">{t('launcher.more_updates.runtime_description')}</p>
+          <div className="mt-4 grid gap-2">
+            {runtimes.map(item => (
+              <button
+                key={item.id}
+                type="button"
+                disabled={switchingRuntime || updating || item.selected || item.status !== 'ready'}
+                onClick={() => { void selectRuntime(item.id) }}
+                className={`flex min-w-0 items-center justify-between gap-4 rounded-md border px-4 py-3 text-left transition-colors disabled:cursor-default ${item.selected ? 'border-[var(--launcher-brand)] bg-[var(--launcher-selected)]' : 'border-[var(--launcher-border)] bg-white/60 hover:bg-[var(--launcher-selected)]/40'}`}
+              >
+                <span className="min-w-0">
+                  <span className="block text-sm font-medium">{t(`launcher.more_updates.runtime_source_${item.source}`)}</span>
+                  <span className="mt-1 block truncate text-xs text-[var(--launcher-muted)]" title={item.entryPath}>{item.entryPath}</span>
+                </span>
+                <span className="flex-none text-right text-xs text-[var(--launcher-muted)]">
+                  <span className="block">{item.version ?? t('launcher.version_unavailable')}</span>
+                  <span className="mt-1 block">{t(`launcher.more_updates.runtime_status_${item.status}`)}</span>
+                </span>
+              </button>
+            ))}
+            {runtimes.length === 0 && <p className="m-0 py-4 text-center text-sm text-[var(--launcher-muted)]">{t('launcher.more_updates.runtime_empty')}</p>}
+          </div>
         </section>
 
         <section className="mt-5 rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)] p-6">

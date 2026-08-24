@@ -137,8 +137,15 @@ async fn fetch_catalog_with_cache(force: bool) -> Result<PluginPackCatalog, Stri
 
 async fn fetch_catalog_remote() -> Result<PluginPackCatalog, String> {
     let content = fetch_text(MARKET_INDEX_URL, "PLUGIN_PACK_MARKET").await?;
-    let catalog = serde_json::from_str::<PluginPackCatalog>(&content)
+    let mut catalog = serde_json::from_str::<PluginPackCatalog>(&content)
         .map_err(|error| format!("PLUGIN_PACK_MARKET_JSON: {error}"))?;
+    let featured = featured_packs();
+    catalog.packs.retain(|pack| {
+        !featured.iter().any(|item| {
+            item.id == pack.id || item.repository.eq_ignore_ascii_case(&pack.repository)
+        })
+    });
+    catalog.packs.splice(0..0, featured);
     validate_catalog(&catalog)?;
     Ok(catalog)
 }
@@ -147,6 +154,10 @@ async fn fetch_catalog_remote() -> Result<PluginPackCatalog, String> {
 pub async fn fetch_detail(pack_id: &str) -> Result<PluginPackDetail, String> {
     if !valid_id(pack_id) {
         return Err("PLUGIN_PACK_INVALID_ID: pack id is invalid".to_string());
+    }
+    if let Some(detail) = featured_pack_detail(pack_id) {
+        validate_detail(&detail)?;
+        return Ok(detail);
     }
     let catalog = fetch_catalog().await?;
     let listing = catalog
@@ -164,6 +175,82 @@ pub async fn fetch_detail(pack_id: &str) -> Result<PluginPackDetail, String> {
     };
     validate_detail(&detail)?;
     Ok(detail)
+}
+
+/// 启动器明确置顶的社区全家桶。它们仍按单个 DSH 插件规格安装，不是模板或
+/// 启动器私有安装器；顺序必须保持在远程市场条目之前。
+fn featured_packs() -> Vec<PluginPackListing> {
+    vec![
+        PluginPackListing {
+            id: "featured-dsh-web-ui".to_string(),
+            name: "dsh-web-ui 全家桶".to_string(),
+            description: "DSH Web UI 插件与皮肤生态聚合包，可按需启停各功能插件。".to_string(),
+            repository: "https://github.com/zhu1090093659/dsh-web".to_string(),
+            topics: vec!["dsh-plugin-pack".to_string()],
+            format: "json-manifest".to_string(),
+            source_file: "package.json".to_string(),
+            source_url: "https://raw.githubusercontent.com/zhu1090093659/dsh-web/main/package.json"
+                .to_string(),
+            profile: Some("web".to_string()),
+            source: Some("featured-community".to_string()),
+        },
+        PluginPackListing {
+            id: "featured-dsh-webui".to_string(),
+            name: "dsh-webui 会话增强全家桶".to_string(),
+            description: "会话、技能、记忆、浏览器、自动化、文件与用量等能力的单插件全家桶。"
+                .to_string(),
+            repository: "https://github.com/statem-li/dsh-webui".to_string(),
+            topics: vec!["dsh-plugin-pack".to_string()],
+            format: "json-manifest".to_string(),
+            source_file: "package.json".to_string(),
+            source_url: "https://raw.githubusercontent.com/statem-li/dsh-webui/main/package.json"
+                .to_string(),
+            profile: Some("web".to_string()),
+            source: Some("featured-community".to_string()),
+        },
+    ]
+}
+
+fn featured_pack_detail(pack_id: &str) -> Option<PluginPackDetail> {
+    let listing = featured_packs()
+        .into_iter()
+        .find(|pack| pack.id == pack_id)?;
+    let (version, license, plugin) = match pack_id {
+        "featured-dsh-web-ui" => (
+            None,
+            Some("Apache-2.0".to_string()),
+            PluginPackPlugin {
+                id: "dsh-web-ui-all".to_string(),
+                name: "@linxin666/dsh-web-ui-all".to_string(),
+                kind: "plugin".to_string(),
+                spec: "@linxin666/dsh-web-ui-all@latest".to_string(),
+                repository: Some(listing.repository.clone()),
+                description: Some("DSH Web UI 功能插件与皮肤聚合包".to_string()),
+                requires: Vec::new(),
+            },
+        ),
+        "featured-dsh-webui" => (
+            None,
+            Some("BSD-3-Clause".to_string()),
+            PluginPackPlugin {
+                id: "dsh-webui".to_string(),
+                name: "dsh-webui".to_string(),
+                kind: "plugin".to_string(),
+                spec: "github:statem-li/dsh-webui".to_string(),
+                repository: Some(listing.repository.clone()),
+                description: Some("DeepSeek Harness 会话增强全家桶".to_string()),
+                requires: Vec::new(),
+            },
+        ),
+        _ => return None,
+    };
+    Some(PluginPackDetail {
+        listing,
+        version,
+        license,
+        plugins: vec![plugin],
+        profile: Some("web".to_string()),
+    })
 }
 
 /// 按插件包声明的 requires 关系生成稳定安装顺序。
@@ -533,7 +620,10 @@ fn spec_package_name(spec: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_readme_manifest, spec_package_name, tokenize_command, PluginPackListing};
+    use super::{
+        featured_pack_detail, featured_packs, parse_readme_manifest, spec_package_name,
+        tokenize_command, PluginPackListing,
+    };
 
     fn listing(format: &str) -> PluginPackListing {
         PluginPackListing {
@@ -582,6 +672,21 @@ mod tests {
         assert_eq!(
             spec_package_name("@scope/example@^1.0.0").as_deref(),
             Some("@scope/example")
+        );
+    }
+
+    #[test]
+    fn keeps_user_featured_packs_in_required_order() {
+        let packs = featured_packs();
+        assert_eq!(packs[0].id, "featured-dsh-web-ui");
+        assert_eq!(packs[1].id, "featured-dsh-webui");
+        assert_eq!(
+            featured_pack_detail("featured-dsh-web-ui").unwrap().plugins[0].spec,
+            "@linxin666/dsh-web-ui-all@latest"
+        );
+        assert_eq!(
+            featured_pack_detail("featured-dsh-webui").unwrap().plugins[0].spec,
+            "github:statem-li/dsh-webui"
         );
     }
 }

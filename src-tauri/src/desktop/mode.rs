@@ -16,7 +16,7 @@ impl RunMode {
 
     pub fn app_user_model_id(&self) -> String {
         match self {
-            Self::Launcher => "io.github.hairyf.deepseek-harness-desktop.launcher".to_string(),
+            Self::Launcher => "io.github.baihejiangnan.dsh-launcher.launcher".to_string(),
             Self::Instance { id } => {
                 let safe_id: String = id
                     .chars()
@@ -28,7 +28,7 @@ impl RunMode {
                         }
                     })
                     .collect();
-                format!("io.github.hairyf.deepseek-harness-desktop.instance.{safe_id}")
+                format!("io.github.baihejiangnan.dsh-launcher.instance.{safe_id}")
             }
         }
     }

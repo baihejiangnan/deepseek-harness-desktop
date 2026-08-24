@@ -4,7 +4,7 @@
 #[cfg(not(windows))]
 use std::fs;
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, Runtime};
 
 #[cfg(windows)]
 use super::shim::SHIM_CMD_NAME;
@@ -35,7 +35,7 @@ const RC_FILES: [&str; 2] = [".zshrc", ".bashrc"];
 /// bin 目录：
 /// - Windows：`%LOCALAPPDATA%\deepseek-harness\bin`（用户级、不随应用数据目录变动）
 /// - Unix：`~/.local/bin`（XDG 约定，通常已在 PATH 中）
-pub fn get_bin_dir(app_handle: &AppHandle) -> PathBuf {
+pub fn get_bin_dir<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
     #[cfg(windows)]
     {
         std::env::var_os("LOCALAPPDATA")

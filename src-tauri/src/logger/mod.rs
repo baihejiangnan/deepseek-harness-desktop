@@ -15,7 +15,7 @@ const OFF: u8 = 5;
 
 /// 与 tauri.conf.json 的 identifier 保持一致。logger 初始化早于 AppHandle 可用，
 /// 日志文件路径需要自行按 Tauri app_data_dir 的规则（系统数据目录 + identifier）推导。
-const APP_IDENTIFIER: &str = "io.github.hairyf.deepseek-harness-desktop";
+const APP_IDENTIFIER: &str = "io.github.baihejiangnan.dsh-launcher";
 /// 壳自身日志文件名（与 dsh 核心的 dsh-web.log 放同一 logs 目录）
 const LOG_FILE_NAME: &str = "desktop.log";
 /// 单文件超过该字节数即滚动，滚动后保留最近 3 个历史文件（desktop.log.1 ~ .3）

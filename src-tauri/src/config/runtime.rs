@@ -159,6 +159,10 @@ fn get_node_version_of(node: &Path) -> Option<String> {
     }
 }
 
+pub(crate) fn is_node_binary_compatible(node: &Path) -> bool {
+    get_node_version_of(node).is_some_and(|version| is_supported_node_version(&version))
+}
+
 /// 检测本地是否存在版本兼容的 Node.js 环境，返回其二进制路径
 pub fn get_local_node_path() -> Option<PathBuf> {
     let node = find_local_node_binary()?;
@@ -169,7 +173,7 @@ pub fn get_local_node_path() -> Option<PathBuf> {
 /// Node.js 二进制路径
 ///
 /// 优先级：本地版本兼容的 Node.js 环境 > 已安装的捆绑运行时
-pub fn get_node_binary_path(app_handle: &tauri::AppHandle) -> PathBuf {
+pub fn get_node_binary_path<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
     if let Some(local_node) = get_local_node_path() {
         log::debug!("Using local Node.js: {}", local_node.display());
         return local_node;
@@ -191,7 +195,7 @@ pub fn get_node_binary_path(app_handle: &tauri::AppHandle) -> PathBuf {
     }
 }
 
-pub fn get_node_install_path(app_handle: &tauri::AppHandle) -> PathBuf {
+pub fn get_node_install_path<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
     get_base_dir(app_handle).join("runtime")
 }
 
@@ -204,7 +208,22 @@ pub fn get_dsh_install_path<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
 
 /// dsh CLI 入口
 pub fn get_dsh_binary_path<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
-    get_dsh_install_path(app_handle).join(DSH_ENTRY_RELATIVE)
+    super::dsh_runtime::active(app_handle)
+        .map(|runtime| runtime.entry_path)
+        .unwrap_or_else(|| get_dsh_install_path(app_handle).join(DSH_ENTRY_RELATIVE))
+}
+
+/// Working directory and Node executable belonging to the selected runtime.
+pub fn get_dsh_working_dir<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
+    super::dsh_runtime::active(app_handle)
+        .map(|runtime| runtime.working_dir)
+        .unwrap_or_else(|| get_dsh_install_path(app_handle))
+}
+
+pub fn get_dsh_node_path<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
+    super::dsh_runtime::active(app_handle)
+        .map(|runtime| runtime.node_path)
+        .unwrap_or_else(|| get_node_binary_path(app_handle))
 }
 
 /// pnpm 安装目录
@@ -324,6 +343,11 @@ pub fn is_runtime_compatible(app_handle: &tauri::AppHandle) -> bool {
 
 /// 从打包的 Harness 清单读取 dsh 版本（界面展示用）
 pub fn get_dsh_version<R: Runtime>(app_handle: &AppHandle<R>) -> Option<String> {
+    if let Some(version) =
+        super::dsh_runtime::active(app_handle).and_then(|runtime| runtime.version)
+    {
+        return Some(version);
+    }
     let manifest_path = get_dsh_package_json_path(app_handle);
     let content = fs::read_to_string(&manifest_path).ok()?;
     let manifest: serde_json::Value = serde_json::from_str(&content).ok()?;
@@ -361,7 +385,9 @@ pub fn runtime_info<R: Runtime>(app: &AppHandle<R>, port: u16) -> RuntimeInfo {
     RuntimeInfo {
         app_version: app.package_info().version.to_string(),
         dsh_version: get_dsh_version(app),
-        node_version: get_active_node_version(),
+        node_version: super::dsh_runtime::active(app)
+            .and_then(|runtime| get_node_version_of(&runtime.node_path))
+            .unwrap_or_else(get_active_node_version),
         service_url: get_dsh_service_url(port),
         data_dir: app_data_dir.clone(),
         log_path: PathBuf::from(&app_data_dir)

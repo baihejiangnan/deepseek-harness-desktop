@@ -121,7 +121,7 @@ fn dsh_web_capability_key(app_handle: &tauri::AppHandle) -> String {
 }
 
 fn probe_no_open_capability(app_handle: &tauri::AppHandle) -> Option<bool> {
-    let node = config::get_node_binary_path(app_handle);
+    let node = config::get_dsh_node_path(app_handle);
     let dsh = config::get_dsh_binary_path(app_handle);
     if !node.is_file() || !dsh.is_file() {
         return None;
@@ -132,7 +132,7 @@ fn probe_no_open_capability(app_handle: &tauri::AppHandle) -> Option<bool> {
         .arg(dsh)
         .args(["web", "--help"])
         .env("DSH_HOME", config::get_dsh_data_path(app_handle))
-        .current_dir(config::get_dsh_install_path(app_handle))
+        .current_dir(config::get_dsh_working_dir(app_handle))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -540,7 +540,7 @@ pub fn runtime_port() -> Option<u16> {
 /// 检测并启动 Harness 服务
 pub async fn start(app_handle: tauri::AppHandle) -> Result<(), String> {
     let setting = config::get_store_dat_setting(&app_handle);
-    let node_binary_path = config::get_node_binary_path(&app_handle);
+    let node_binary_path = config::get_dsh_node_path(&app_handle);
     let dsh_binary_path = config::get_dsh_binary_path(&app_handle);
 
     if !setting.installed {
@@ -603,7 +603,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     let setting = config::get_store_dat_setting(&app_handle);
     let instance = config::instance::active()
         .ok_or_else(|| "INSTANCE_NOT_SELECTED: select an instance before launch".to_string())?;
-    let node_binary_path = config::get_node_binary_path(&app_handle);
+    let node_binary_path = config::get_dsh_node_path(&app_handle);
     let dsh_binary_path = config::get_dsh_binary_path(&app_handle);
 
     log::debug!("Checking Node.js path: {:?}", node_binary_path);
@@ -720,7 +720,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
             win_spawn::spawn_with_hidden_console_owned(
                 &node_binary_path,
                 &args,
-                Some(&config::get_dsh_install_path(&app_handle)),
+                Some(&config::get_dsh_working_dir(&app_handle)),
                 &envs,
             )
             .map(|(stdout, stderr, pid, handle)| {
@@ -770,7 +770,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                 cmd.arg("--no-open");
             }
             cmd.envs(&envs)
-                .current_dir(config::get_dsh_install_path(&app_handle))
+                .current_dir(config::get_dsh_working_dir(&app_handle))
                 // 核心修正：提供一个空的 stdin 防止 setRawMode 报错
                 .stdin(Stdio::null())
                 // 使用管道捕获输出，以便在子线程中读取

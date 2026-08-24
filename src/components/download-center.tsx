@@ -257,27 +257,30 @@ interface DownloadCenterProps {
 }
 
 type ResourceView = 'plugins' | 'packs' | 'manage'
+type CatalogSource = 'awesome' | 'dshfind'
 
 const CATALOG_CACHE_TTL_MS = 15 * 60 * 1000
 
-let catalogCache: { value: PluginCatalog, loadedAt: number } | null = null
-let catalogRequest: Promise<PluginCatalog> | null = null
+const catalogCaches = new Map<CatalogSource, { value: PluginCatalog, loadedAt: number }>()
+const catalogRequests = new Map<CatalogSource, Promise<PluginCatalog>>()
 
-function getCatalog(force: boolean): Promise<PluginCatalog> {
+function getCatalog(source: CatalogSource, force: boolean): Promise<PluginCatalog> {
   const now = Date.now()
   // 手动刷新也复用正在进行的请求，避免连续点击产生并发网络请求。
-  if (catalogRequest)
-    return catalogRequest
-  if (!force && catalogCache && now - catalogCache.loadedAt < CATALOG_CACHE_TTL_MS)
-    return Promise.resolve(catalogCache.value)
+  const activeRequest = catalogRequests.get(source)
+  if (activeRequest)
+    return activeRequest
+  const cache = catalogCaches.get(source)
+  if (!force && cache && now - cache.loadedAt < CATALOG_CACHE_TTL_MS)
+    return Promise.resolve(cache.value)
 
-  const request = invoke<PluginCatalog>('get_plugin_catalog', { force })
-  catalogRequest = request
+  const request = invoke<PluginCatalog>('get_plugin_catalog', { force, source })
+  catalogRequests.set(source, request)
   request.then((value) => {
-    catalogCache = { value, loadedAt: Date.now() }
+    catalogCaches.set(source, { value, loadedAt: Date.now() })
   }, () => {}).finally(() => {
-    if (catalogRequest === request)
-      catalogRequest = null
+    if (catalogRequests.get(source) === request)
+      catalogRequests.delete(source)
   })
   return request
 }
@@ -288,6 +291,7 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
   const { serviceRunning } = useStore(store.harness)
   const [targetId, setTargetId] = useState<string | null>(registry.activeInstanceId)
   const [resourceView, setResourceView] = useState<ResourceView>('plugins')
+  const [catalogSource, setCatalogSource] = useState<CatalogSource>('awesome')
   const [catalog, setCatalog] = useState<PluginCatalog | null>(null)
   const [catalogLoading, setCatalogLoading] = useState(false)
   const [catalogError, setCatalogError] = useState('')
@@ -349,13 +353,13 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
 
   async function loadCatalog(force = false) {
     // 缓存内容先展示，网络更新在后台进行，避免每次切换导航时出现空白加载态。
-    if (catalogCache)
-      setCatalog(catalogCache.value)
-    setCatalogLoading(catalogCache == null)
+    const cached = catalogCaches.get(catalogSource)
+    setCatalog(cached?.value ?? null)
+    setCatalogLoading(cached == null)
     setCatalogError('')
     setCatalogPage(1)
     try {
-      setCatalog(await getCatalog(force))
+      setCatalog(await getCatalog(catalogSource, force))
     }
     catch (err) {
       setCatalogError(String(err))
@@ -471,7 +475,9 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
 
   useEffect(() => {
     void loadCatalog()
-  }, [])
+    // 来源变化时切换独立缓存，函数本身不作为依赖。
+    // eslint-disable-next-line react/exhaustive-deps
+  }, [catalogSource])
 
   useEffect(() => {
     resourceViewRef.current = resourceView
@@ -562,7 +568,7 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
     let unlisten: UnlistenFn | undefined
     try {
       unlisten = await listen<InstallLog>('plugin-install-log', event => setLogs(previous => [...previous, event.payload.line].slice(-120)))
-      await invoke('install_catalog_plugin_for_instance', { instanceId: target.id, pluginName: plugin.name })
+      await invoke('install_catalog_plugin_for_instance', { instanceId: target.id, pluginName: plugin.name, source: catalogSource })
       await loadInstalled()
     }
     catch (err) {
@@ -787,6 +793,23 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
                         <h2 className="m-0 text-sm font-semibold">{t('download.catalog_title')}</h2>
                         <p className="m-0 mt-1 text-xs text-[var(--launcher-muted)]">{catalog ? t('download.catalog_updated', { date: catalog.updated, count: catalog.count }) : t('download.catalog_hint')}</p>
                       </div>
+                      <Select
+                        aria-label={t('download.catalog_source_label')}
+                        selectedKey={catalogSource}
+                        onSelectionChange={(key) => {
+                          setCategory('all')
+                          setCatalogSource(String(key) as CatalogSource)
+                        }}
+                        className="launcher-select w-[190px]"
+                      >
+                        <Select.Trigger className="h-9 rounded-md"><Select.Value /></Select.Trigger>
+                        <Select.Popover className="launcher-select-popover rounded-md">
+                          <ListBox>
+                            <ListBox.Item id="awesome" textValue={t('download.catalog_source_awesome')} className="rounded-md">{t('download.catalog_source_awesome')}</ListBox.Item>
+                            <ListBox.Item id="dshfind" textValue={t('download.catalog_source_dshfind')} className="rounded-md">{t('download.catalog_source_dshfind')}</ListBox.Item>
+                          </ListBox>
+                        </Select.Popover>
+                      </Select>
                       <input className="h-9 min-w-[220px] flex-1 rounded-md border border-[var(--launcher-border)] bg-white px-3 text-sm outline-none focus:border-[var(--launcher-brand)]" placeholder={t('download.search_placeholder')} value={query} onChange={event => changeCatalogQuery(event.target.value)} />
                       <div ref={categoryMenuRef} className="relative w-[190px]">
                         <button

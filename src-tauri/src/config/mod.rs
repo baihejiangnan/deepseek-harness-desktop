@@ -1,4 +1,5 @@
 mod constants;
+mod dsh_runtime;
 mod format;
 pub mod i18n;
 pub mod instance;
@@ -9,6 +10,7 @@ mod theme;
 mod utils;
 
 pub use constants::*;
+pub use dsh_runtime::*;
 pub use format::*;
 pub use region::*;
 pub use runtime::*;

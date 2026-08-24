@@ -485,6 +485,7 @@ pub async fn ensure_extract<'a, R: Runtime>(
 const DSH_PKG_GITHUB_API: &str = "https://api.github.com/repos/hairyf/deepseek-harness-pkg";
 /// pkg 仓库 HTML 来源；`releases.atom` 走 github.com 而非 api.github.com，不受未认证限流约束。
 const DSH_PKG_REPO: &str = "https://github.com/hairyf/deepseek-harness-pkg";
+const DSH_NPM_LATEST: &str = "https://registry.npmjs.org/@deepseek-ai%2Fdsh/latest";
 
 /// 最新 Harness 发行版信息（版本 tag + 对应 commit hash）
 #[derive(Debug, Clone, serde::Serialize)]
@@ -496,6 +497,36 @@ pub struct LatestDshPkg {
     /// 此时该信息**仅可作更新提示**（tag/commit 仍有效），不可用于自动重装——
     /// 重装路径会因完整性校验缺失而中止（沿用 DSH_INTEGRITY_UNAVAILABLE 安全设计）。
     pub digest: Option<String>,
+}
+
+/// Query the source of truth for package-manager installations. Launcher-managed
+/// installations intentionally use the signed package release above instead.
+pub async fn fetch_latest_npm_dsh_version() -> Result<String, String> {
+    let value: serde_json::Value = reqwest::Client::builder()
+        .user_agent("dsh-launcher")
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|error| format!("DSH_NPM_LATEST_FAILED:{error}"))?
+        .get(DSH_NPM_LATEST)
+        .send()
+        .await
+        .map_err(|error| format!("DSH_NPM_LATEST_FAILED:{error}"))?
+        .error_for_status()
+        .map_err(|error| format!("DSH_NPM_LATEST_FAILED:{error}"))?
+        .json()
+        .await
+        .map_err(|error| format!("DSH_NPM_LATEST_FAILED:{error}"))?;
+    value
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .filter(|version| {
+            version
+                .chars()
+                .next()
+                .is_some_and(|value| value.is_ascii_digit())
+        })
+        .map(str::to_owned)
+        .ok_or_else(|| "DSH_NPM_LATEST_FAILED:registry response has no valid version".to_string())
 }
 
 /// 构造带 User-Agent 与超时的 GitHub 请求客户端。

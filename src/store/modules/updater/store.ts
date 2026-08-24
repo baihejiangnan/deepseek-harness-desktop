@@ -126,7 +126,7 @@ export const updater = defineStore({
           this.phaseDetail = payload.detail || payload.log || this.phaseDetail
         })
 
-        const changed = await invoke<boolean>('install_dependencies')
+        const changed = await invoke<boolean>('update_active_dsh_runtime')
         if (!changed) {
           this.progress = 100
           toast(i18next.t('update.dsh_verify_failed'), { variant: 'danger', placement: 'bottom end' })
@@ -175,7 +175,7 @@ export const updater = defineStore({
           variant: 'tertiary',
         },
         placement: 'bottom end',
-        description: this.updateInfo.commit.slice(0, 7),
+        description: this.updateInfo.commit?.slice(0, 7) ?? 'npm',
         variant: 'default',
       })
     },

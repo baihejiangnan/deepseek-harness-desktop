@@ -14,6 +14,7 @@ const COLLAB_STORE_FILE: &str = "collaboration.dat";
 const COLLAB_STORE_KEY: &str = "collaboration_graph";
 const WORKFLOWS_STORE_KEY: &str = "collaboration_workflows";
 const PROMPT_MANUAL_FILE: &str = ".dsh-collab-api.md";
+const COLLAB_AGENTS_FILE: &str = ".dsh-collab-agents.md";
 static RPC_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static RPC_CLIENT: std::sync::OnceLock<Result<reqwest::Client, String>> =
     std::sync::OnceLock::new();
@@ -242,7 +243,10 @@ pub async fn poll_task(port: u16, session_id: &str) -> Result<CollabTaskStatus, 
         match event.get("type").and_then(Value::as_str) {
             Some("turn/end") => done = true,
             Some("assistant/message") => {
-                if let Some(text) = event.pointer("/data/message/content").and_then(extract_text) {
+                if let Some(text) = event
+                    .pointer("/data/message/content")
+                    .and_then(extract_text)
+                {
                     if !result.is_empty() {
                         result.push('\n');
                     }
@@ -257,12 +261,7 @@ pub async fn poll_task(port: u16, session_id: &str) -> Result<CollabTaskStatus, 
 
 /// 取消运行中会话的任务（幂等；取消后实例会补写一个中断的 turn/end）。
 pub async fn cancel_task(port: u16, session_id: &str) -> Result<(), String> {
-    rpc(
-        port,
-        "session.cancel",
-        json!({ "sessionId": session_id }),
-    )
-    .await?;
+    rpc(port, "session.cancel", json!({ "sessionId": session_id })).await?;
     Ok(())
 }
 
@@ -283,10 +282,10 @@ pub fn save_graph(app_handle: &AppHandle, graph: serde_json::Value) -> Result<()
         .map_err(|error| format!("COLLAB_STORE_SAVE: {error}"))
 }
 
-/// 把协作编排的运行时契约写入工作区（端口、角色、父子关系），供各实例读取。
+/// 把协作编排的运行时契约与配套协议写入工作区，供各实例读取。
 ///
-/// 契约文件只是“连接信息 + 角色说明”，更丰富的交互约定由用户在工作区放
-/// Markdown 文档规划；契约文件本身应被 Agent 视为只读参考。
+/// 不创建或修改工作区已有的 `AGENTS.md`：项目自身规范与 DSH 运行时协作协议
+/// 分开保存，避免启动一次协作就污染用户项目的长期开发约束。
 pub fn write_contract(input: CollabContractInput) -> Result<String, String> {
     let workspace = std::path::Path::new(&input.workspace);
     if !workspace.is_dir() {
@@ -309,6 +308,9 @@ pub fn write_contract(input: CollabContractInput) -> Result<String, String> {
     let manual_path = workspace.join(PROMPT_MANUAL_FILE);
     std::fs::write(&manual_path, PROMPT_MANUAL_CONTENT)
         .map_err(|error| format!("COLLAB_CONTRACT_FAILED: write manual: {error}"))?;
+    let agents_path = workspace.join(COLLAB_AGENTS_FILE);
+    std::fs::write(&agents_path, COLLAB_AGENTS_CONTENT)
+        .map_err(|error| format!("COLLAB_CONTRACT_FAILED: write agents protocol: {error}"))?;
     Ok(path.to_string_lossy().into_owned())
 }
 
@@ -405,6 +407,55 @@ POST http://127.0.0.1:<PORT>/api/<method>
 `session.create`（带 workspaceId）→ `session.prompt`（下发任务）→ 轮询 `session.history` 直到 `turn/end` → 必要时 `session.cancel`。
 "#;
 
+/// 生成到工作区的多 Agent 行为协议。它补充项目原有 `AGENTS.md`，只描述本次
+/// DSH 协作如何分工、避免写入冲突和交付结果，不包含会失效的端口与会话信息。
+const COLLAB_AGENTS_CONTENT: &str = r#"# DSH 多 Agent 协作协议（运行时）
+
+本文件由 DSH Launcher 为当前协作生成，不替代工作区原有的 `AGENTS.md`。
+所有参与实例开始任务前必须读取项目规范、`.dsh-collab.json`、
+`.dsh-collab-api.md` 和本文件，但不要修改这些运行时文件。
+
+## 信息来源
+
+- 项目架构、代码风格与验证要求以工作区原有 `AGENTS.md` 和项目文档为准。
+- 当前实例身份、角色、父子关系与端口以 `.dsh-collab.json` 为准。
+- 实例间下发、轮询与取消方法以 `.dsh-collab-api.md` 为准。
+- 运行时信息与项目规则冲突时，不得用协作便利绕过项目的数据、安全或验证约束。
+
+## 协作规则
+
+- 只处理分配给当前实例的职责和任务范围，不擅自改变其他节点职责。
+- 修改前检查相关文件与已有未提交改动；不要重置、回滚、删除或覆盖其他 Agent 的工作。
+- 尽量让并行节点修改互不重叠的文件。必须修改共享入口或同一文件时，先向主代理报告并由主代理协调所有权。
+- 不擅自执行 commit、push、rebase、reset、批量格式化或清理工作区。
+- 不把凭据、API Key、会话正文或其他敏感数据写入协作契约和交付摘要。
+- 遇到需求冲突、文件所有权冲突或无法安全继续时，停止相关写入并向主代理报告，不自行猜测覆盖。
+
+## 执行与验证
+
+1. 确认当前 `instanceId`、角色、父节点和子节点。
+2. 阅读任务涉及的现有实现并明确预计修改的文件。
+3. 小步完成职责范围内的工作，保留工作区中的无关改动。
+4. 执行与修改风险相称的测试、类型检查、静态检查或构建。
+5. 将结果按以下格式交付给父节点或主代理。
+
+## 交付格式
+
+- 状态：完成 / 部分完成 / 阻塞
+- 修改文件：列出实际修改的文件；未修改则写“无”
+- 完成内容：简述可供下游使用的结果
+- 验证结果：列出执行的检查及结果
+- 遗留风险：说明未验证内容、失败路径或待决事项
+- 建议下游操作：仅列出确有必要的后续动作
+
+## 主代理职责
+
+- 拆分任务时尽量避免并行节点的文件范围重叠，并明确验收标准。
+- 把本协议及必要的项目上下文包含在对子代理的任务说明中。
+- 处理共享文件所有权、冲突与失败节点，最终核对各节点产物而不是只接受“已完成”声明。
+- 汇总前检查验证结果和工作区 diff；不得把子代理的文字报告等同于代码已经正确集成。
+"#;
+
 fn load_workflows(app_handle: &AppHandle) -> Vec<serde_json::Value> {
     let store = match app_handle.store(COLLAB_STORE_FILE) {
         Ok(store) => store,
@@ -420,10 +471,7 @@ fn save_workflows(app_handle: &AppHandle, workflows: Vec<serde_json::Value>) -> 
     let store = app_handle
         .store(COLLAB_STORE_FILE)
         .map_err(|error| format!("COLLAB_STORE_OPEN: {error}"))?;
-    store.set(
-        WORKFLOWS_STORE_KEY,
-        serde_json::Value::Array(workflows),
-    );
+    store.set(WORKFLOWS_STORE_KEY, serde_json::Value::Array(workflows));
     store
         .save()
         .map_err(|error| format!("COLLAB_STORE_SAVE: {error}"))
@@ -486,13 +534,14 @@ pub fn save_workflow(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0);
-    if let Some(existing) = workflows.iter_mut().find(|entry| {
-        entry.get("name").and_then(|value| value.as_str()) == Some(trimmed.as_str())
-    }) {
+    if let Some(existing) = workflows
+        .iter_mut()
+        .find(|entry| entry.get("name").and_then(|value| value.as_str()) == Some(trimmed.as_str()))
+    {
         existing["graph"] = graph;
         existing["updatedAt"] = serde_json::json!(now);
-        let summary = workflow_summary(existing)
-            .ok_or_else(|| "COLLAB_WORKFLOW_INVALID".to_string())?;
+        let summary =
+            workflow_summary(existing).ok_or_else(|| "COLLAB_WORKFLOW_INVALID".to_string())?;
         save_workflows(app_handle, workflows)?;
         return Ok(summary);
     }
@@ -502,8 +551,7 @@ pub fn save_workflow(
         "graph": graph,
         "updatedAt": now,
     });
-    let summary =
-        workflow_summary(&entry).ok_or_else(|| "COLLAB_WORKFLOW_INVALID".to_string())?;
+    let summary = workflow_summary(&entry).ok_or_else(|| "COLLAB_WORKFLOW_INVALID".to_string())?;
     workflows.push(entry);
     save_workflows(app_handle, workflows)?;
     Ok(summary)
@@ -522,8 +570,7 @@ pub fn load_workflow(app_handle: &AppHandle, id: &str) -> Result<serde_json::Val
 pub fn delete_workflow(app_handle: &AppHandle, id: &str) -> Result<(), String> {
     let mut workflows = load_workflows(app_handle);
     let before = workflows.len();
-    workflows
-        .retain(|entry| entry.get("id").and_then(|value| value.as_str()) != Some(id));
+    workflows.retain(|entry| entry.get("id").and_then(|value| value.as_str()) != Some(id));
     if workflows.len() == before {
         return Err(format!("COLLAB_WORKFLOW_NOT_FOUND: {id}"));
     }
@@ -547,7 +594,10 @@ mod tests {
     #[test]
     fn extract_text_skips_empty_content() {
         assert_eq!(extract_text(&json!([])), None);
-        assert_eq!(extract_text(&json!([{ "type": "text", "text": "  " }])), None);
+        assert_eq!(
+            extract_text(&json!([{ "type": "text", "text": "  " }])),
+            None
+        );
     }
 
     #[cfg(windows)]
@@ -562,5 +612,40 @@ mod tests {
     fn same_path_normalizes_separators() {
         assert!(same_path("/home/a/work", "/home/a/work"));
         assert!(!same_path("/home/a/work", "/home/a/other"));
+    }
+
+    #[test]
+    fn write_contract_adds_runtime_protocol_without_overwriting_project_agents() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let workspace = std::env::temp_dir().join(format!("dsh-collab-contract-{unique}"));
+        std::fs::create_dir_all(&workspace).expect("create test workspace");
+        let project_agents = workspace.join("AGENTS.md");
+        std::fs::write(&project_agents, "project rules").expect("write project agents");
+
+        let result = write_contract(CollabContractInput {
+            workspace: workspace.to_string_lossy().into_owned(),
+            agents: vec![CollabContractAgent {
+                instance_id: "instance-a".to_string(),
+                name: "Agent A".to_string(),
+                role: "Implement feature".to_string(),
+                port: 43121,
+                parent_instance_id: None,
+                children: Vec::new(),
+            }],
+        });
+
+        assert!(result.is_ok());
+        assert!(workspace.join(".dsh-collab.json").is_file());
+        assert!(workspace.join(PROMPT_MANUAL_FILE).is_file());
+        assert!(workspace.join(COLLAB_AGENTS_FILE).is_file());
+        assert_eq!(
+            std::fs::read_to_string(&project_agents).expect("read project agents"),
+            "project rules"
+        );
+
+        std::fs::remove_dir_all(&workspace).expect("remove test workspace");
     }
 }

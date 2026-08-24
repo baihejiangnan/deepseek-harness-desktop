@@ -1,9 +1,9 @@
 {
-  "name": "deepseek-harness-desktop",
+  "name": "dsh-launcher",
   "type": "module",
   "version": "0.0.4",
   "private": true,
-  "description": "Desktop application for DeepSeek Harness (dsh) — one-click local install and launch, no Node.js setup required.",
+  "description": "Multi-instance desktop launcher for DeepSeek Harness (dsh).",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",

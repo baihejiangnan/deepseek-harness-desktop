@@ -1,8 +1,8 @@
 name: Build & Release
 
 on:
-  # 正式发布：推送 v* tag 触发（先由 changelogithub 生成 changelog 并创建 release，再并行打包上传产物）
-  # git tag -a v0.1.0 -m "release: DeepSeek Harness Desktop v0.1.0"
+  # 正式发布：推送 v* tag 触发（先生成当前分支版本线的 changelog，再并行打包上传产物）
+  # git tag -a v0.1.0 -m "release: DSH Launcher v0.1.0"
   # git push origin v0.1.0
   push:
     tags:
@@ -40,45 +40,40 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v6
-        with:
-          version: 10
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: '22'
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-
-      - name: Generate GitHub Changelog
-        id: changelogithub
-        run: pnpx changelogithub
-        continue-on-error: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Append Artifacts section to release
-        if: steps.changelogithub.outcome == 'success'
+      - name: Generate release notes from the current version line
         run: |
-          gh release view ${{ github.ref_name }} --json body -q .body > release_notes.md
-          cat >> release_notes.md << 'EOF'
+          previous_tag="$(git tag --merged "${GITHUB_SHA}^" --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)"
+          if [ -n "$previous_tag" ]; then
+            range="${previous_tag}..${GITHUB_SHA}"
+          else
+            range="${GITHUB_SHA}"
+          fi
+          {
+            echo '## 本次更新'
+            echo
+            git log --no-merges --pretty='- %s (`%h`)' "$range"
+            echo
+            echo '## 下载说明'
+            echo
+            echo '- **macOS Apple Silicon**：下载 `aarch64.dmg`'
+            echo '- **macOS Intel**：下载 `x64.dmg`'
+            echo '- **Windows 安装版**：下载 `setup.exe` 或 `.msi`'
+            echo '- **Windows 便携版**：下载文件名包含 `portable.exe` 的产物'
+            echo '- **Linux x64**：下载 `.AppImage` 或 `.deb`（基于 Ubuntu 22.04 构建）'
+          } > release_notes.md
 
-             ### 📦 Artifacts
-             - **macOS (Apple Silicon)**: 下载 `aarch64.dmg`
-             - **macOS (Intel)**: 下载 `x64.dmg`
-             - **Windows**: 下载 `.exe`
-             - **Linux (x64)**: 下载 `.AppImage` 或 `.deb`（基于 Ubuntu 22.04 构建，兼容 22.04 及更新版本）
-          EOF
-          gh release edit ${{ github.ref_name }} --notes-file release_notes.md
+          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+            gh release edit "${{ github.ref_name }}" --title "DSH Launcher ${{ github.ref_name }}" --notes-file release_notes.md
+          else
+            gh release create "${{ github.ref_name }}" --verify-tag --draft --title "DSH Launcher ${{ github.ref_name }}" --notes-file release_notes.md
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   publish:
     # tag 触发时等待 changelog 生成完成再打包；手动触发时跳过 changelog 直接测试打包
     needs: changelog
-    if: github.event_name == 'workflow_dispatch' || needs.changelog.result == 'success'
+    if: always() && (github.event_name == 'workflow_dispatch' || needs.changelog.result == 'success')
     strategy:
       fail-fast: false
       matrix:
@@ -168,46 +163,64 @@ jobs:
             sleep 10
           done
           [ "$apt_ok" = "1" ] || { echo "apt-get update 连续 3 次失败，中止"; exit 1; }
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
 
       - name: Install frontend dependencies
         if: steps.check.outputs.should_run == 'true'
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       # 正式发布：release 已由 changelog 任务创建，这里只上传产物。
       # 注意：不要传 releaseBody —— tauri-action 会用它覆盖已有 release 的正文。
       - name: Build and Release (For Tags)
         if: steps.check.outputs.should_run == 'true' && github.event_name == 'push'
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_BUNDLE_TARGETS: ${{ matrix.platform == 'ubuntu-22.04' && 'appimage,deb' || 'all' }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: 'DeepSeek Harness Desktop ${{ github.ref_name }}'
-          releaseDraft: false
+          releaseName: 'DSH Launcher ${{ github.ref_name }}'
+          releaseDraft: true
           prerelease: false
-          includeUpdaterJson: true
           args: ${{ matrix.args }}
 
       # 手动触发：单平台/全平台测试打包（草稿 + 预发布，不打扰正式用户）
       - name: Build and Create Test Release (For Manual Trigger)
         if: steps.check.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch'
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_BUNDLE_TARGETS: ${{ matrix.platform == 'ubuntu-22.04' && 'appimage,deb' || 'all' }}
         with:
-          tagName: ${{ format('test-{0}-{1}', github.ref_name, github.run_number) }}
-          releaseName: 'DeepSeek Harness Desktop 手动测试版 (构建 #${{ github.run_number }})'
+          tagName: ${{ format('test-build-{0}', github.run_number) }}
+          releaseName: 'DSH Launcher 手动测试版 (构建 #${{ github.run_number }})'
           releaseBody: |
-            DeepSeek Harness Desktop 手动触发的单平台/全平台测试构建。
+            DSH Launcher 手动触发的单平台/全平台测试构建。
             触发分支: `${{ github.ref_name }}`
             打包平台: `${{ github.event.inputs.platform_filter }}`
           prerelease: true
+          releaseDraft: true
           args: ${{ matrix.args }}
+
+      - name: Prepare Windows portable executable
+        if: steps.check.outputs.should_run == 'true' && matrix.id == 'windows'
+        shell: pwsh
+        run: |
+          $version = if ('${{ github.event_name }}' -eq 'push') { '${{ github.ref_name }}'.TrimStart('v') } else { 'test-${{ github.run_number }}' }
+          $portableDir = 'release/windows'
+          New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
+          Copy-Item -LiteralPath 'src-tauri/target/release/dsh-launcher.exe' -Destination "$portableDir/DSH-Launcher_${version}_windows_x64_portable.exe" -Force
+
+      - name: Upload Windows portable executable to release
+        if: steps.check.outputs.should_run == 'true' && matrix.id == 'windows'
+        shell: pwsh
+        run: |
+          $tag = if ('${{ github.event_name }}' -eq 'push') { '${{ github.ref_name }}' } else { 'test-build-${{ github.run_number }}' }
+          $portable = Get-ChildItem -LiteralPath 'release/windows' -Filter '*_portable.exe' | Select-Object -First 1
+          if (-not $portable) { throw 'Portable executable was not generated' }
+          gh release upload $tag $portable.FullName --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload Artifacts (For Manual Trigger)
         if: steps.check.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch'
@@ -220,4 +233,17 @@ jobs:
             src-tauri/target/release/bundle/msi/*.msi
             src-tauri/target/release/bundle/appimage/*.AppImage
             src-tauri/target/release/bundle/deb/*.deb
+            release/windows/*_portable.exe
           retention-days: 7
+
+  publish-release:
+    name: Publish completed release
+    needs: publish
+    if: github.event_name == 'push' && needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the fully uploaded draft
+        run: gh release edit "${{ github.ref_name }}" --draft=false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}

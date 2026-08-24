@@ -1,6 +1,6 @@
 use super::constants::*;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Runtime};
 use tauri_plugin_store::StoreExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +36,11 @@ pub struct Setting {
     /// 移除实例前是否询问用户先进入导出页面。
     #[serde(default = "default_confirm_before_instance_removal")]
     pub confirm_before_instance_removal: bool,
+    /// Explicitly selected DSH runtime. Missing/invalid values are healed by
+    /// discovery, preserving compatibility with settings written before
+    /// multi-source runtime management existed.
+    #[serde(default)]
+    pub active_dsh_runtime_id: Option<String>,
 }
 
 /// 命令行集成默认开启（开发者工具场景，安装完成即可用）
@@ -85,11 +90,12 @@ impl Default for Setting {
             dsh_web_supports_no_open: None,
             cli_link_enabled: default_cli_link_enabled(),
             confirm_before_instance_removal: default_confirm_before_instance_removal(),
+            active_dsh_runtime_id: None,
         }
     }
 }
 
-pub fn set_store_dat_setting(app_handle: &AppHandle, setting: Setting) {
+pub fn set_store_dat_setting<R: Runtime>(app_handle: &AppHandle<R>, setting: Setting) {
     let store = app_handle
         .store(STORE_DAT_FILE)
         .expect("Failed to load store");
@@ -100,7 +106,7 @@ pub fn set_store_dat_setting(app_handle: &AppHandle, setting: Setting) {
         .expect("Failed to emit event");
 }
 
-pub fn get_store_dat_setting(app_handle: &AppHandle) -> Setting {
+pub fn get_store_dat_setting<R: Runtime>(app_handle: &AppHandle<R>) -> Setting {
     let store = app_handle
         .store(STORE_DAT_FILE)
         .expect("Failed to load store");
@@ -116,24 +122,24 @@ pub fn get_store_dat_setting(app_handle: &AppHandle) -> Setting {
 }
 
 /// 已安装 Harness 发行版对应的 GitHub release commit hash
-pub fn get_dsh_pkg_commit(app_handle: &AppHandle) -> Option<String> {
+pub fn get_dsh_pkg_commit<R: Runtime>(app_handle: &AppHandle<R>) -> Option<String> {
     get_store_dat_setting(app_handle).dsh_pkg_commit
 }
 
 /// 记录已安装 Harness 发行版的 GitHub release commit hash
-pub fn set_dsh_pkg_commit(app_handle: &AppHandle, commit: String) {
+pub fn set_dsh_pkg_commit<R: Runtime>(app_handle: &AppHandle<R>, commit: String) {
     let mut setting = get_store_dat_setting(app_handle);
     setting.dsh_pkg_commit = Some(commit);
     set_store_dat_setting(app_handle, setting);
 }
 
 /// 已安装 Harness 发行版对应的 GitHub release tag
-pub fn get_dsh_pkg_tag(app_handle: &AppHandle) -> Option<String> {
+pub fn get_dsh_pkg_tag<R: Runtime>(app_handle: &AppHandle<R>) -> Option<String> {
     get_store_dat_setting(app_handle).dsh_pkg_tag
 }
 
 /// 记录已安装 Harness 发行版的 GitHub release tag
-pub fn set_dsh_pkg_tag(app_handle: &AppHandle, tag: String) {
+pub fn set_dsh_pkg_tag<R: Runtime>(app_handle: &AppHandle<R>, tag: String) {
     let mut setting = get_store_dat_setting(app_handle);
     setting.dsh_pkg_tag = Some(tag);
     set_store_dat_setting(app_handle, setting);

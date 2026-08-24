@@ -9,8 +9,8 @@
 同一个可执行文件根据启动参数进入不同宿主模式：
 
 ```text
-deepseek-harness-desktop.exe --mode launcher
-deepseek-harness-desktop.exe --mode instance --instance-id <id>
+dsh-launcher.exe --mode launcher
+dsh-launcher.exe --mode instance --instance-id <id>
 ```
 
 `launcher` 进程拥有实例管理器窗口和启动器任务栏标识。每次启动实例时，启动器派生一个新的 `instance` 进程；实例进程只绑定自己的实例记录、端口和 Harness 进程，并创建独立窗口。
@@ -18,8 +18,8 @@ deepseek-harness-desktop.exe --mode instance --instance-id <id>
 Windows 任务栏 AppUserModelID 约定为：
 
 ```text
-io.github.hairyf.deepseek-harness-desktop.launcher
-io.github.hairyf.deepseek-harness-desktop.instance.<instance-id>
+io.github.baihejiangnan.dsh-launcher.launcher
+io.github.baihejiangnan.dsh-launcher.instance.<instance-id>
 ```
 
 启动实例后启动器调用 `minimize()`，保持进程和任务栏按钮存在。关闭实例窗口只停止对应 Harness，不退出启动器或其他实例。

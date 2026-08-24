@@ -875,16 +875,18 @@ export default function CollaborationPanel() {
     }
   }
 
-  /** 主代理的初始指令：告知工作区、契约文件与职责，引导其阅读契约后待命 */
+  /** 主代理的初始指令：告知工作区、运行时协议与职责，引导其读取后待命 */
   function buildMasterSeed(masterNode: CanvasNode): string {
     const instance = instanceById.get(masterNode.instanceId)
     const contractPath = `${workspaceRef.current.replace(/[\\/]+$/, '')}\\.dsh-collab.json`
     const manualPath = `${workspaceRef.current.replace(/[\\/]+$/, '')}\\.dsh-collab-api.md`
+    const agentsPath = `${workspaceRef.current.replace(/[\\/]+$/, '')}\\.dsh-collab-agents.md`
     return t('launcher.collaboration.master_seed', {
       name: instance?.name ?? masterNode.instanceId,
       workspace: workspaceRef.current,
       contractPath,
       manualPath,
+      agentsPath,
       role: masterNode.task.trim() || t('launcher.collaboration.master_role_unset'),
     })
   }

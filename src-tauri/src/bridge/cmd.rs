@@ -39,6 +39,32 @@ fn ensure_launcher_only() -> Result<(), String> {
     }
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DshUpdateInfo {
+    tag: String,
+    commit: Option<String>,
+    source: &'static str,
+}
+
+impl DshUpdateInfo {
+    fn managed(latest: &download::LatestDshPkg) -> Self {
+        Self {
+            tag: latest.tag.clone(),
+            commit: Some(latest.commit.clone()),
+            source: "launcher",
+        }
+    }
+
+    fn npm(version: String) -> Self {
+        Self {
+            tag: version,
+            commit: None,
+            source: "npm",
+        }
+    }
+}
+
 static INSTANCE_HOSTS: std::sync::OnceLock<
     std::sync::Mutex<std::collections::HashMap<String, std::process::Child>>,
 > = std::sync::OnceLock::new();
@@ -48,6 +74,60 @@ static INSTANCE_HOSTS: std::sync::OnceLock<
 // the global context while an async install/remove is still running.
 static INSTANCE_OPERATION_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> =
     std::sync::OnceLock::new();
+const RUNTIME_WRITER: usize = usize::MAX;
+static RUNTIME_ACCESS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+struct RuntimeMutationGuard;
+
+impl RuntimeMutationGuard {
+    fn acquire() -> Result<Self, String> {
+        RUNTIME_ACCESS
+            .compare_exchange(
+                0,
+                RUNTIME_WRITER,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .map(|_| Self)
+            .map_err(|_| "DSH_RUNTIME_BUSY:another runtime operation is in progress".to_string())
+    }
+}
+
+impl Drop for RuntimeMutationGuard {
+    fn drop(&mut self) {
+        RUNTIME_ACCESS.store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+struct RuntimeUseGuard;
+
+impl RuntimeUseGuard {
+    fn acquire() -> Result<Self, String> {
+        loop {
+            let readers = RUNTIME_ACCESS.load(std::sync::atomic::Ordering::SeqCst);
+            if readers == RUNTIME_WRITER {
+                return Err("DSH_RUNTIME_BUSY:runtime is being switched or updated".to_string());
+            }
+            if RUNTIME_ACCESS
+                .compare_exchange(
+                    readers,
+                    readers + 1,
+                    std::sync::atomic::Ordering::SeqCst,
+                    std::sync::atomic::Ordering::SeqCst,
+                )
+                .is_ok()
+            {
+                return Ok(Self);
+            }
+        }
+    }
+}
+
+impl Drop for RuntimeUseGuard {
+    fn drop(&mut self) {
+        RUNTIME_ACCESS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 fn instance_operation_lock() -> &'static tokio::sync::Mutex<()> {
     INSTANCE_OPERATION_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
@@ -158,6 +238,17 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<bool, String>
     if workflow::status::get_status() == workflow::status::Status::Installing {
         log::info!("Installation process already running, skipping");
         return Ok(false);
+    }
+
+    // Adopt a user installation instead of downloading a duplicate managed core.
+    if let Some(runtime) = config::active(&app_handle) {
+        if runtime.source != config::DshRuntimeSource::Launcher {
+            let mut setting = config::get_store_dat_setting(&app_handle);
+            setting.installed = true;
+            setting.active_dsh_runtime_id = Some(runtime.id);
+            config::set_store_dat_setting(&app_handle, setting);
+            return Ok(false);
+        }
     }
 
     // 以实际安装状态为准：本地安装与 GitHub 最新 release 的 commit hash
@@ -292,10 +383,17 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<bool, String>
 /// 失败或外围途径更新而滞后于文件，此时修正记录并免打扰；同版本热修
 /// （版本相同但 commit 不同）仍正常提示。
 #[tauri::command]
-pub async fn check_dsh_update(
-    app_handle: AppHandle,
-) -> Result<Option<download::LatestDshPkg>, String> {
+pub async fn check_dsh_update(app_handle: AppHandle) -> Result<Option<DshUpdateInfo>, String> {
     ensure_launcher_update_context()?;
+    if let Some(runtime) = config::active(&app_handle) {
+        if runtime.source != config::DshRuntimeSource::Launcher {
+            let latest_version = download::fetch_latest_npm_dsh_version().await?;
+            return Ok(
+                (runtime.version.as_deref() != Some(latest_version.as_str()))
+                    .then(|| DshUpdateInfo::npm(latest_version)),
+            );
+        }
+    }
     // 本地没有安装时无需提示更新
     let dsh_files_ok = download::Dsh.check_installed(&app_handle);
     if !dsh_files_ok {
@@ -323,7 +421,7 @@ pub async fn check_dsh_update(
         &legacy_tags,
     ) {
         download::UpdateCheck::UpToDate => Ok(None),
-        download::UpdateCheck::UpdateAvailable => Ok(Some(latest)),
+        download::UpdateCheck::UpdateAvailable => Ok(Some(DshUpdateInfo::managed(&latest))),
         download::UpdateCheck::HealUpToDate => {
             // 安装文件已是最新 release，只是记录滞后：修正记录后下次启动
             // 直接走 commit 比对快速路径，不再误报
@@ -337,6 +435,88 @@ pub async fn check_dsh_update(
             Ok(None)
         }
     }
+}
+
+#[tauri::command]
+pub async fn list_dsh_runtimes(app_handle: AppHandle) -> Result<Vec<config::DshRuntime>, String> {
+    ensure_launcher_update_context()?;
+    Ok(config::discover(&app_handle))
+}
+
+#[tauri::command]
+pub async fn select_dsh_runtime(
+    app_handle: AppHandle,
+    runtime_id: String,
+) -> Result<config::DshRuntime, String> {
+    ensure_launcher_update_context()?;
+    let _mutation_guard = RuntimeMutationGuard::acquire()?;
+    if !list_running_instances()?.is_empty() || workflow::has_owned_process() {
+        return Err("DSH_RUNTIME_IN_USE:stop all instances before switching runtime".to_string());
+    }
+    config::select(&app_handle, &runtime_id)
+}
+
+#[tauri::command]
+pub async fn update_active_dsh_runtime(app_handle: AppHandle) -> Result<bool, String> {
+    ensure_launcher_update_context()?;
+    let _mutation_guard = RuntimeMutationGuard::acquire()?;
+    if !list_running_instances()?.is_empty() || workflow::has_owned_process() {
+        return Err("DSH_RUNTIME_IN_USE:stop all instances before updating runtime".to_string());
+    }
+    let runtime = config::active(&app_handle)
+        .ok_or_else(|| "DSH_RUNTIME_NOT_FOUND:no active runtime".to_string())?;
+    if runtime.source == config::DshRuntimeSource::Launcher {
+        return install_dependencies(app_handle).await;
+    }
+    if !runtime.writable {
+        return Err("DSH_RUNTIME_NOT_WRITABLE:selected runtime is not writable".to_string());
+    }
+    let manager = config::package_manager_executable(&runtime).ok_or_else(|| {
+        "DSH_RUNTIME_UPDATE_UNSUPPORTED:package manager was not found".to_string()
+    })?;
+    let manager_args = config::package_manager_update_args(&runtime)?;
+    let expected_version = download::fetch_latest_npm_dsh_version().await?;
+    let output = tokio::task::spawn_blocking(move || {
+        #[cfg(windows)]
+        let mut command = {
+            use std::os::windows::process::CommandExt;
+            let mut command = std::process::Command::new("cmd.exe");
+            command
+                .args(["/D", "/S", "/C"])
+                .arg(&manager)
+                .args(&manager_args);
+            command.creation_flags(0x08000000);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut command = std::process::Command::new(&manager);
+        command.args(manager_args);
+        command
+            .output()
+            .map_err(|error| format!("DSH_RUNTIME_UPDATE_FAILED:{error}"))
+    })
+    .await
+    .map_err(|error| format!("DSH_RUNTIME_UPDATE_FAILED:{error}"))??;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!("DSH_RUNTIME_UPDATE_FAILED:{detail}"));
+    }
+    let selected = config::discover(&app_handle)
+        .into_iter()
+        .find(|candidate| candidate.selected)
+        .ok_or_else(|| "DSH_RUNTIME_UPDATE_FAILED:runtime disappeared after update".to_string())?;
+    if !selected.entry_path.is_file() {
+        return Err("DSH_RUNTIME_UPDATE_FAILED:updated CLI is missing".to_string());
+    }
+    if selected.version.as_deref() != Some(expected_version.as_str()) {
+        return Err(format!(
+            "DSH_RUNTIME_UPDATE_FAILED:expected version {expected_version}, found {}",
+            selected.version.as_deref().unwrap_or("unknown")
+        ));
+    }
+    config::select(&app_handle, &selected.id)?;
+    workflow::refresh_web_capabilities(&app_handle);
+    Ok(true)
 }
 
 /// 启动 Harness 服务
@@ -370,6 +550,7 @@ pub async fn launch_instance_window(
     minimized: Option<bool>,
     port: Option<u16>,
 ) -> Result<u32, String> {
+    let _runtime_guard = RuntimeUseGuard::acquire()?;
     let registry = config::instance::list(&app_handle)?;
     let target = registry
         .instances
@@ -457,8 +638,8 @@ pub fn focus_instance_window(id: String) -> Result<(), String> {
     #[cfg(windows)]
     {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            BringWindowToTop, EnumWindows, SetForegroundWindow, SetWindowPos, ShowWindow,
-            HWND_TOP, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_RESTORE, SW_SHOW,
+            BringWindowToTop, EnumWindows, SetForegroundWindow, SetWindowPos, ShowWindow, HWND_TOP,
+            SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_RESTORE, SW_SHOW,
         };
         let mut search = InstanceWindowSearch { pid, hwnd: None };
         unsafe {
@@ -513,10 +694,7 @@ pub fn list_running_instances() -> Result<Vec<String>, String> {
 /// 每个实例宿主把 Harness 的 PID/端口写入自己的 DSH Home 下的
 /// `.harness.pid`。只读取仍被实例宿主托管且端口仍在监听的记录，避免把
 /// 崩溃后的陈旧端口用于 RPC。
-fn resolve_running_instance_port(
-    app_handle: &AppHandle,
-    instance_id: &str,
-) -> Result<u16, String> {
+fn resolve_running_instance_port(app_handle: &AppHandle, instance_id: &str) -> Result<u16, String> {
     let registry = config::instance::list(&app_handle)?;
     let instance = registry
         .instances
@@ -645,9 +823,7 @@ pub async fn collab_save_graph(
 
 /// 把协作契约（端口、角色、父子关系）写入工作区，返回契约文件路径。
 #[tauri::command]
-pub async fn collab_write_contract(
-    input: collab::CollabContractInput,
-) -> Result<String, String> {
+pub async fn collab_write_contract(input: collab::CollabContractInput) -> Result<String, String> {
     ensure_launcher_only()?;
     collab::write_contract(input)
 }
@@ -913,6 +1089,7 @@ pub async fn install_plugin_packages(
     app_handle: AppHandle,
     specs: Vec<String>,
 ) -> Result<(), String> {
+    let _runtime_guard = RuntimeUseGuard::acquire()?;
     plugin::reset_cancel();
     if let Some(instance) = config::instance::active() {
         if instance_host_is_running(&instance.id)? {
@@ -931,6 +1108,7 @@ pub async fn install_plugin_packages_for_instance(
     instance_id: String,
     input: String,
 ) -> Result<(), String> {
+    let _runtime_guard = RuntimeUseGuard::acquire()?;
     plugin::reset_cancel();
     let target = config::instance::find(&app_handle, &instance_id)?;
     if let Some(running) = instance_home_is_running(&app_handle, &target)? {
@@ -951,13 +1129,19 @@ pub async fn install_plugin_packages_for_instance(
     result
 }
 
-/// 获取社区精选插件目录；普通读取复用短期缓存，强制刷新由下载页按钮触发。
+/// 获取用户选择的社区插件目录；各来源独立复用短期缓存。
 #[tauri::command]
-pub async fn get_plugin_catalog(force: bool) -> Result<plugin::registry::PluginCatalog, String> {
+pub async fn get_plugin_catalog(
+    force: bool,
+    source: Option<String>,
+) -> Result<plugin::registry::PluginCatalog, String> {
+    let source = source
+        .as_deref()
+        .unwrap_or(plugin::registry::DEFAULT_SOURCE);
     if force {
-        plugin::registry::refresh().await
+        plugin::registry::refresh(source).await
     } else {
-        plugin::registry::fetch().await
+        plugin::registry::fetch(source).await
     }
 }
 
@@ -967,9 +1151,13 @@ pub async fn install_catalog_plugin_for_instance(
     app_handle: AppHandle,
     instance_id: String,
     plugin_name: String,
+    source: Option<String>,
 ) -> Result<(), String> {
     plugin::reset_cancel();
-    let catalog = plugin::registry::fetch().await?;
+    let source = source
+        .as_deref()
+        .unwrap_or(plugin::registry::DEFAULT_SOURCE);
+    let catalog = plugin::registry::fetch(source).await?;
     let entry = catalog
         .plugins
         .iter()
@@ -1024,6 +1212,7 @@ pub async fn install_plugin_pack_for_instance(
     instance_id: String,
     pack_id: String,
 ) -> Result<plugin::pack::PluginPackInstallResult, String> {
+    let _runtime_guard = RuntimeUseGuard::acquire()?;
     let target = config::instance::find(&app_handle, &instance_id)?;
     if let Some(running) = instance_home_is_running(&app_handle, &target)? {
         return Err(format!("INSTANCE_RUNNING:{}:{}", running.id, running.name));
@@ -1110,6 +1299,7 @@ pub fn set_plugin_enabled_for_instance(
     plugin_id: String,
     enabled: bool,
 ) -> Result<(), String> {
+    let _runtime_guard = RuntimeUseGuard::acquire()?;
     let target = config::instance::find(&app_handle, &instance_id)?;
     if let Some(running) = instance_home_is_running(&app_handle, &target)? {
         return Err(format!("INSTANCE_RUNNING:{}:{}", running.id, running.name));
@@ -1129,6 +1319,7 @@ pub async fn remove_plugin_for_instance(
     instance_id: String,
     plugin_id: String,
 ) -> Result<(), String> {
+    let _runtime_guard = RuntimeUseGuard::acquire()?;
     let target = config::instance::find(&app_handle, &instance_id)?;
     if let Some(running) = instance_home_is_running(&app_handle, &target)? {
         return Err(format!("INSTANCE_RUNNING:{}:{}", running.id, running.name));
@@ -1165,9 +1356,8 @@ pub async fn get_runtime_info(app_handle: AppHandle) -> Result<config::RuntimeIn
 /// 补记 installed 后直接启动，避免自动重开时闪现误导用户的安装界面。
 #[tauri::command]
 pub fn runtime_ready(app_handle: AppHandle) -> bool {
-    download::Nodejs.check_installed(&app_handle)
-        && download::Dsh.check_installed(&app_handle)
-        && download::Pnpm.check_installed(&app_handle)
+    config::active(&app_handle)
+        .is_some_and(|runtime| runtime.entry_path.is_file() && runtime.node_path.is_file())
 }
 
 /// 当前桌面端配置

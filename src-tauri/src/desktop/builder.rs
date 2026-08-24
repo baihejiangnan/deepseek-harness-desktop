@@ -121,11 +121,11 @@ pub fn build_tray_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<()> {
     #[cfg(not(target_os = "macos"))]
     let builder = builder.transparent(true);
     let builder = builder
-    .skip_taskbar(true)
-    .always_on_top(true)
-    .shadow(true)
-    .focused(false)
-    .visible(false);
+        .skip_taskbar(true)
+        .always_on_top(true)
+        .shadow(true)
+        .focused(false)
+        .visible(false);
     builder.build()?;
     Ok(())
 }
@@ -145,7 +145,7 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
 
     let webview_builder =
         WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-            .title("Deepseek Harness Desktop")
+            .title("DSH Launcher")
             .icon(launcher_icon()?)?
             .inner_size(1078.0, 654.0)
             .min_inner_size(860.0, 560.0)
@@ -273,6 +273,9 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
         crate::bridge::cmd::install_dependencies,
         crate::bridge::cmd::check_dsh_update,
+        crate::bridge::cmd::list_dsh_runtimes,
+        crate::bridge::cmd::select_dsh_runtime,
+        crate::bridge::cmd::update_active_dsh_runtime,
         crate::bridge::cmd::launch_harness,
         crate::bridge::cmd::export_instance_profile,
         crate::bridge::cmd::export_instance_home,

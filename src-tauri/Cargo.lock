@@ -813,37 +813,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "deepseek-harness-desktop"
-version = "0.0.4"
-dependencies = [
- "async-trait",
- "dunce",
- "flate2",
- "futures-util",
- "image",
- "log",
- "reqwest 0.12.28",
- "rfd",
- "serde",
- "serde_json",
- "sha2",
- "tar",
- "tauri",
- "tauri-build",
- "tauri-plugin-clipboard-manager",
- "tauri-plugin-fs",
- "tauri-plugin-notification",
- "tauri-plugin-opener",
- "tauri-plugin-single-instance",
- "tauri-plugin-store",
- "tokio",
- "webview2-com",
- "windows-core 0.61.2",
- "windows-sys 0.61.2",
- "zip",
-]
-
-[[package]]
 name = "defmt"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1019,6 +988,37 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "dsh-launcher"
+version = "0.0.4"
+dependencies = [
+ "async-trait",
+ "dunce",
+ "flate2",
+ "futures-util",
+ "image",
+ "log",
+ "reqwest 0.12.28",
+ "rfd",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-clipboard-manager",
+ "tauri-plugin-fs",
+ "tauri-plugin-notification",
+ "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-store",
+ "tokio",
+ "webview2-com",
+ "windows-core 0.61.2",
+ "windows-sys 0.61.2",
+ "zip",
 ]
 
 [[package]]

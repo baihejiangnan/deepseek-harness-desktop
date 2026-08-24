@@ -1,8 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Deepseek Harness Desktop",
+  "productName": "DSH Launcher",
   "version": "0.0.4",
-  "identifier": "io.github.hairyf.deepseek-harness-desktop",
+  "identifier": "io.github.baihejiangnan.dsh-launcher",
+  "mainBinaryName": "dsh-launcher",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -28,7 +29,7 @@
     ],
     "resources": ["resources/**/*"],
     "category": "DeveloperTool",
-    "copyright": "Copyright © 2026 Deepseek Harness Desktop contributors",
+    "copyright": "Copyright © 2026 DSH Launcher contributors",
     "shortDescription": "Desktop application for DeepSeek Harness",
     "longDescription": "A native desktop application for running DeepSeek Harness (dsh) locally with one-click install and zero configuration."
   }
