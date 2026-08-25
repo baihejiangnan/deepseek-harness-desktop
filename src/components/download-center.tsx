@@ -4,7 +4,7 @@ import { ArrowDownToLine, ArrowLeft, ArrowRight, ArrowRotateRight, ArrowUpRightF
 import { Button, Chip, ListBox, Modal, Select, useOverlayState } from '@heroui/react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
 import { store } from '@/store'
@@ -299,6 +299,7 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
   const [category, setCategory] = useState('all')
   const [catalogPage, setCatalogPage] = useState(1)
   const [categoryOpen, setCategoryOpen] = useState(false)
+  const [categoryMenuAlign, setCategoryMenuAlign] = useState<'start' | 'end'>('start')
   const [specs, setSpecs] = useState('')
   const [plugins, setPlugins] = useState<InstalledPlugin[]>([])
   const [loading, setLoading] = useState(false)
@@ -505,6 +506,29 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
     }
     document.addEventListener('pointerdown', closeOnOutsidePointer)
     return () => document.removeEventListener('pointerdown', closeOnOutsidePointer)
+  }, [categoryOpen])
+
+  useLayoutEffect(() => {
+    if (!categoryOpen)
+      return
+
+    function updateCategoryMenuAlignment() {
+      const wrapper = categoryMenuRef.current
+      if (!wrapper)
+        return
+      const triggerRect = wrapper.getBoundingClientRect()
+      const contentLeft = wrapper.closest('main')?.getBoundingClientRect().left ?? 16
+      const menuWidth = Math.min(430, window.innerWidth - 32)
+      const startFitsViewport = triggerRect.left + menuWidth <= window.innerWidth - 16
+      const endWouldOverlapNavigation = triggerRect.right - menuWidth < contentLeft + 8
+      // The alignment is derived from live geometry and must be committed before paint.
+      // eslint-disable-next-line react/set-state-in-effect
+      setCategoryMenuAlign(startFitsViewport && endWouldOverlapNavigation ? 'start' : 'end')
+    }
+
+    updateCategoryMenuAlignment()
+    window.addEventListener('resize', updateCategoryMenuAlignment)
+    return () => window.removeEventListener('resize', updateCategoryMenuAlignment)
   }, [categoryOpen])
 
   const categories = useMemo(() => {
@@ -825,7 +849,7 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
                         <div
                           role="listbox"
                           aria-label={t('download.all_categories')}
-                          className={`absolute right-0 top-full z-30 mt-2 w-[min(430px,calc(100vw-2rem))] origin-top-right rounded-lg border border-[var(--launcher-border)] bg-[var(--launcher-surface)]/90 p-3 shadow-[0_14px_36px_rgba(25,45,64,0.18)] backdrop-blur-xl transition-all duration-200 ease-out ${categoryOpen ? 'visible scale-100 opacity-100' : 'pointer-events-none invisible scale-95 opacity-0'}`}
+                          className={`absolute top-full z-30 mt-2 w-[min(430px,calc(100vw-2rem))] rounded-lg border border-[var(--launcher-border)] bg-[var(--launcher-surface)]/90 p-3 shadow-[0_14px_36px_rgba(25,45,64,0.18)] backdrop-blur-xl transition-all duration-200 ease-out ${categoryMenuAlign === 'start' ? 'left-0 origin-top-left' : 'right-0 origin-top-right'} ${categoryOpen ? 'visible scale-100 opacity-100' : 'pointer-events-none invisible scale-95 opacity-0'}`}
                         >
                           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                             <button
