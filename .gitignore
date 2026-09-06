@@ -1,6 +1,8 @@
 node_modules
 .pnpm-store
 dist
+# 已注册实例 "Fix it" 的真实 DSH_HOME，内含 .credentials.yaml / settings.yaml / sessions，禁止入库
+src-tauri/Fix it/
 src-tauri/target
 src-tauri/gen
 src-tauri/resources/node
