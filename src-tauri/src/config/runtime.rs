@@ -17,6 +17,11 @@ pub fn get_base_dir<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
         .expect("Failed to resolve app data directory")
 }
 
+/// 实例 WebView 存储路径的唯一入口；清理调用方仍须验证 ID 和目录归属。
+pub fn get_instance_webview_dir<R: Runtime>(app_handle: &AppHandle<R>, id: &str) -> PathBuf {
+    get_base_dir(app_handle).join("webview2").join(id)
+}
+
 /// Node.js 官方/镜像下载前缀：国内走 npmmirror，其他直连 nodejs.org
 fn node_base_url(region: Region) -> &'static str {
     match region {

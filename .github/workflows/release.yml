@@ -237,7 +237,15 @@ jobs:
             src-tauri/target/release/bundle/msi/*.msi
             src-tauri/target/release/bundle/appimage/*.AppImage
             src-tauri/target/release/bundle/deb/*.deb
-            ${{ steps.portable.outputs.path }}
+          retention-days: 7
+
+      - name: Upload Windows portable artifact (For Manual Trigger)
+        if: steps.check.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && matrix.id == 'windows'
+        uses: actions/upload-artifact@v6
+        with:
+          name: deepseek-harness-desktop-windows-portable
+          path: ${{ steps.portable.outputs.path }}
+          if-no-files-found: error
           retention-days: 7
 
   publish-release:

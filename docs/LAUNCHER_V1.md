@@ -1,4 +1,6 @@
-# DSH Launcher V2 Architecture
+# DSH Launcher 架构与数据边界
+
+文件名保留历史名称。开发约束以根目录 [AGENTS.md](../AGENTS.md) 为入口；发布见 [RELEASING.md](RELEASING.md)，尚未实现的附属清理见 [INSTANCE_CLEANUP_PLAN.md](INSTANCE_CLEANUP_PLAN.md)。
 
 ## 目标
 
@@ -22,7 +24,7 @@ io.github.baihejiangnan.dsh-launcher.launcher
 io.github.baihejiangnan.dsh-launcher.instance.<instance-id>
 ```
 
-启动实例后启动器调用 `minimize()`，保持进程和任务栏按钮存在。关闭实例窗口只停止对应 Harness，不退出启动器或其他实例。
+实例服务就绪且窗口出现后启动器才调用 `minimize()`，保持进程和任务栏按钮存在。关闭实例窗口只停止对应 Harness，不退出启动器或其他实例。
 
 ## 实例模型
 
@@ -32,7 +34,7 @@ io.github.baihejiangnan.dsh-launcher.instance.<instance-id>
 DSH version + DSH_HOME + Profile + runtime launch state
 ```
 
-- `DSH version`：V1 固定为最新版开发预览版，但注册表保留 `channel` 与 `tag`，用于未来支持多版本。
+- `DSH version`：所有实例共用启动器当前选中的运行时；注册表中的兼容字段不能视为每个实例独立选择运行时的能力。
 - `DSH_HOME`：保存 API Key、会话、Agent 预设、设置及其他用户数据。
 - `Profile`：保存插件、补丁及插件依赖。
 - 运行状态：进程、PID 和端口仅属于本次运行，不写入实例记录。
@@ -58,7 +60,7 @@ Profile 名称只在对应的 `DSH_HOME` 内有意义。因此，不同 Home 中
 
 ## 首次使用流程
 
-1. 选择 DSH 版本。V1 的选择框只提供“最新开发预览版”。
+1. 确认启动器当前运行时；选择普通实例或修复助手实例。
 2. 选择或输入 DSH_HOME。
 3. 输入 Profile 名称。
 4. 启动器实时说明该组合与现有实例共享哪些数据。
@@ -79,11 +81,11 @@ Profile 名称只在对应的 `DSH_HOME` 内有意义。因此，不同 Home 中
 
 ## V2 实施范围
 
-本版本实现实例创建、选择、移除（Home 级删除与仅删注册记录两种）、共享关系提示、自动端口分配、独立窗口/任务栏标识、并行实例、启动器最小化、实例独立关闭/崩溃回收，以及启动器更新与 DSH 运行时更新的边界分离。资源、启动器设置与更多页面保留现有入口；多 DSH 版本下载、实例导入导出作为后续扩展。
+当前包含实例管理、两种移除方式、共享关系检查、独立宿主、运行时管理、插件管理、模型服务商模板及导入、修复助手和导出。具体命令与能力以当前代码为准；附属数据自动清理仍是待实施方案。
 
 ## 数据边界
 
-启动器注册表只保存实例元数据，不保存 API Key、会话、Agent 预设或插件内容。实例进程通过 `DSH_HOME` 和 Profile 环境变量直接使用用户目录；桌面封装端不复制、迁移或修改 DSH 原生数据，也不参与 DSH 自身的更新逻辑。唯一对用户数据的破坏性操作是用户显式执行的移除实例流程（删除该实例的 `DSH_HOME`）；更改实例的 Home 路径不会迁移或删除旧路径的数据。
+启动器注册表只保存实例元数据。服务商模板在独立存储中保存配置及加密凭据，用户选择导入时通过适配层写入目标 Home；导出、插件管理和 Home 删除也会按用户选择操作数据。不得把这些外部管理操作扩展为改写 DSH 核心或原生页面。更改 Home 路径不会迁移或删除旧路径数据；仅移除记录保留所有文件。
 
 ## 更新策略
 

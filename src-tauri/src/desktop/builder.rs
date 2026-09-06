@@ -294,9 +294,7 @@ pub fn build_instance_window(
     let mut last_error: Option<tauri::Error> = None;
     for attempt in 1..=3 {
         let app_for_events = app.clone();
-        let webview_data_dir = crate::config::get_base_dir(app)
-            .join("webview2")
-            .join(&instance.id);
+        let webview_data_dir = crate::config::get_instance_webview_dir(app, &instance.id);
         match WebviewWindowBuilder::new(
             app,
             format!("instance-{}", instance.id),

@@ -1,7 +1,7 @@
 node_modules
 .pnpm-store
 dist
-# 已注册实例 "Fix it" 的真实 DSH_HOME，内含 .credentials.yaml / settings.yaml / sessions，禁止入库
+# 历史实例 Home；保留规则以防重建后误提交凭据
 src-tauri/Fix it/
 src-tauri/target
 src-tauri/gen
@@ -15,4 +15,6 @@ src-tauri/resources/node
 .tmp
 skills
 .serena
-*.lnk
+# 本地验收产物与浏览器快照
+/output/
+/.playwright-cli/
