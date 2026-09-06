@@ -45,6 +45,8 @@ pub struct DshUpdateInfo {
     tag: String,
     commit: Option<String>,
     source: &'static str,
+    installable: bool,
+    release_url: Option<String>,
 }
 
 impl DshUpdateInfo {
@@ -53,6 +55,8 @@ impl DshUpdateInfo {
             tag: latest.tag.clone(),
             commit: Some(latest.commit.clone()),
             source: "launcher",
+            installable: true,
+            release_url: None,
         }
     }
 
@@ -61,8 +65,33 @@ impl DshUpdateInfo {
             tag: version,
             commit: None,
             source: "npm",
+            installable: true,
+            release_url: None,
         }
     }
+
+    fn upstream(latest: download::UpstreamDshRelease) -> Self {
+        Self {
+            tag: latest.tag,
+            commit: latest.commit,
+            source: "upstream",
+            installable: false,
+            release_url: Some(latest.url),
+        }
+    }
+}
+
+async fn unavailable_upstream_update(installed_version: Option<&str>) -> Option<DshUpdateInfo> {
+    let installed_version = installed_version?;
+    let latest = match download::fetch_latest_upstream_dsh_release().await {
+        Ok(latest) => latest,
+        Err(error) => {
+            log::warn!("Failed to check upstream DSH release: {error}");
+            return None;
+        }
+    };
+    download::is_version_newer(&latest.version, installed_version)
+        .then(|| DshUpdateInfo::upstream(latest))
 }
 
 static INSTANCE_HOSTS: std::sync::OnceLock<
@@ -153,6 +182,134 @@ unsafe extern "system" fn find_instance_window(
         return 0;
     }
     1
+}
+
+#[cfg(windows)]
+fn instance_window_exists(pid: u32) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::EnumWindows;
+    let mut search = InstanceWindowSearch { pid, hwnd: None };
+    unsafe {
+        EnumWindows(
+            Some(find_instance_window),
+            &mut search as *mut InstanceWindowSearch as isize,
+        );
+    }
+    search.hwnd.is_some()
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstanceLaunchFailure {
+    instance_id: String,
+    stage: String,
+    message: String,
+    plugins: Vec<String>,
+    log: String,
+}
+
+fn parse_instance_launch_failure(app_handle: &AppHandle, id: &str) -> InstanceLaunchFailure {
+    let log_path = config::get_base_dir(app_handle)
+        .join("logs")
+        .join(format!("{id}.log"));
+    let log = std::fs::read_to_string(log_path).unwrap_or_default();
+    let installed = config::instance::find(app_handle, id)
+        .map(|instance| {
+            plugin::watch::list_profile(&instance.dsh_home.join("profiles").join(&instance.profile))
+                .into_iter()
+                .map(|plugin| plugin.id)
+                .collect::<std::collections::HashSet<_>>()
+        })
+        .unwrap_or_default();
+    let plugins = filter_installed_failed_plugins(&log, &installed);
+    let message = log
+        .lines()
+        .find(|line| line.starts_with("Error: "))
+        .unwrap_or("DSH exited before its Web window became ready.")
+        .trim()
+        .to_string();
+    InstanceLaunchFailure {
+        instance_id: id.to_string(),
+        stage: "service-startup".to_string(),
+        message,
+        plugins,
+        log: redact_instance_log(&log),
+    }
+}
+
+fn filter_installed_failed_plugins(
+    log: &str,
+    installed: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    parse_failed_plugins(log)
+        .into_iter()
+        .filter(|plugin| installed.contains(plugin))
+        .collect()
+}
+
+fn redact_instance_log(log: &str) -> String {
+    log.lines()
+        .rev()
+        .take(200)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(workflow::redact_web_url)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn parse_failed_plugins(log: &str) -> Vec<String> {
+    let mut plugins = Vec::new();
+    for marker in [
+        "failed to import loader entry ",
+        "failed to load plugin ",
+        "plugin load failed: ",
+        "plugin failed to load: ",
+    ] {
+        for tail in log.split(marker).skip(1) {
+            let plugin = tail
+                .split(|character: char| {
+                    character.is_whitespace() || character == '(' || character == ':'
+                })
+                .next()
+                .unwrap_or("")
+                .trim_matches(|character: char| {
+                    character == '`' || character == '\'' || character == '"'
+                });
+            if !plugin.is_empty() && !plugins.iter().any(|item| item == plugin) {
+                plugins.push(plugin.to_string());
+            }
+        }
+    }
+    // Some DSH versions report the package in a quoted `plugin tree` error
+    // instead of repeating the loader-entry marker. Keep this conservative:
+    // only accept npm-shaped tokens immediately following the explicit plugin
+    // label, never arbitrary quoted module names from the stack trace.
+    for line in log.lines() {
+        let lower = line.to_ascii_lowercase();
+        for marker in ["plugin tree failed to load ", "plugin tree failed: "] {
+            let Some(index) = lower.find(marker) else { continue };
+            let tail = line[index + marker.len()..].trim_start_matches([':', ' ', '\t']);
+            let candidate = tail
+                .trim_matches(|character: char| character == '`' || character == '\'' || character == '"')
+                .split(|character: char| character.is_whitespace() || character == '(' || character == ':')
+                .next()
+                .unwrap_or("");
+            if is_plugin_token(candidate) && !plugins.iter().any(|item| item == candidate) {
+                plugins.push(candidate.to_string());
+            }
+        }
+    }
+    plugins
+}
+
+fn is_plugin_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 160
+        && (value.starts_with("dsh-") || value.starts_with("@"))
+        && value.bytes().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, b'@' | b'/' | b'-' | b'_' | b'.')
+        })
 }
 
 fn instance_hosts(
@@ -388,10 +545,14 @@ pub async fn check_dsh_update(app_handle: AppHandle) -> Result<Option<DshUpdateI
     if let Some(runtime) = config::active(&app_handle) {
         if runtime.source != config::DshRuntimeSource::Launcher {
             let latest_version = download::fetch_latest_npm_dsh_version().await?;
-            return Ok(
-                (runtime.version.as_deref() != Some(latest_version.as_str()))
-                    .then(|| DshUpdateInfo::npm(latest_version)),
-            );
+            if runtime
+                .version
+                .as_deref()
+                .is_some_and(|installed| download::is_version_newer(&latest_version, installed))
+            {
+                return Ok(Some(DshUpdateInfo::npm(latest_version)));
+            }
+            return Ok(unavailable_upstream_update(runtime.version.as_deref()).await);
         }
     }
     // 本地没有安装时无需提示更新
@@ -420,7 +581,9 @@ pub async fn check_dsh_update(app_handle: AppHandle) -> Result<Option<DshUpdateI
         &latest,
         &legacy_tags,
     ) {
-        download::UpdateCheck::UpToDate => Ok(None),
+        download::UpdateCheck::UpToDate => {
+            Ok(unavailable_upstream_update(installed_version.as_deref()).await)
+        }
         download::UpdateCheck::UpdateAvailable => Ok(Some(DshUpdateInfo::managed(&latest))),
         download::UpdateCheck::HealUpToDate => {
             // 安装文件已是最新 release，只是记录滞后：修正记录后下次启动
@@ -432,7 +595,7 @@ pub async fn check_dsh_update(app_handle: AppHandle) -> Result<Option<DshUpdateI
             );
             config::set_dsh_pkg_commit(&app_handle, latest.commit.clone());
             config::set_dsh_pkg_tag(&app_handle, latest.tag.clone());
-            Ok(None)
+            Ok(unavailable_upstream_update(installed_version.as_deref()).await)
         }
     }
 }
@@ -551,6 +714,8 @@ pub async fn launch_instance_window(
     port: Option<u16>,
 ) -> Result<u32, String> {
     let _runtime_guard = RuntimeUseGuard::acquire()?;
+    ensure_launcher_update_context()?;
+    let operation_guard = instance_operation_lock().lock().await;
     let registry = config::instance::list(&app_handle)?;
     let target = registry
         .instances
@@ -566,59 +731,112 @@ pub async fn launch_instance_window(
         install_dependencies(app_handle.clone()).await?;
     }
 
-    let mut hosts = instance_hosts()
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    prune_instance_hosts(&mut hosts)?;
-    if let Some(child) = hosts.get_mut(&id) {
-        if child
-            .try_wait()
-            .map_err(|error| error.to_string())?
-            .is_none()
-        {
-            return Ok(child.id());
+    let (pid, _allocated_port) = {
+        let mut hosts = instance_hosts()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        prune_instance_hosts(&mut hosts)?;
+        if let Some(child) = hosts.get_mut(&id) {
+            if child
+                .try_wait()
+                .map_err(|error| error.to_string())?
+                .is_none()
+            {
+                return Err(format!("INSTANCE_ALREADY_STARTING_OR_RUNNING:{id}"));
+            }
+            hosts.remove(&id);
         }
-        hosts.remove(&id);
-    }
-    // 端口必须在持有 hosts 锁时分配，串行化并发启动，避免两个实例宿主
-    // 同时探测到同一个“空闲”端口；协作编排传固定端口，其余路径自动探测。
-    let allocated_port = match port {
-        Some(port) => port,
-        None => crate::service::workflow::find_available_port(setting.port)?,
+        // 端口必须在持有 hosts 锁时分配，串行化并发启动，避免两个实例宿主
+        // 同时探测到同一个“空闲”端口；协作编排传固定端口，其余路径自动探测。
+        let allocated_port = match port {
+            Some(port) => port,
+            None => crate::service::workflow::find_available_port(setting.port)?,
+        };
+
+        // 会话等数据写入 DSH_HOME。多个宿主即使 Profile 不同，同时写同一个
+        // Home 仍会使 session log 的提交序号交叉，最终出现 seq gap。
+        if let Some(running) = registry.instances.iter().find(|instance| {
+            instance.id != id
+                && instance.dsh_home == target.dsh_home
+                && hosts.contains_key(&instance.id)
+        }) {
+            return Err(format!(
+                "INSTANCE_HOME_RUNNING:{}:{}",
+                running.id, running.name
+            ));
+        }
+
+        let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+        let mut command = std::process::Command::new(exe);
+        command.args(["--mode", "instance", "--instance-id", &id]);
+        command.args(["--port", &allocated_port.to_string()]);
+        if minimized.unwrap_or(false) {
+            command.arg("--start-minimized");
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+        let child = command
+            .spawn()
+            .map_err(|error| format!("INSTANCE_HOST_SPAWN: {error}"))?;
+        let pid = child.id();
+        hosts.insert(id.clone(), child);
+        log::info!("Instance host {id} started: pid={pid}");
+        (pid, allocated_port)
     };
 
-    // 会话等数据写入 DSH_HOME。多个宿主即使 Profile 不同，同时写同一个
-    // Home 仍会使 session log 的提交序号交叉，最终出现 seq gap。
-    if let Some(running) = registry.instances.iter().find(|instance| {
-        instance.id != id
-            && instance.dsh_home == target.dsh_home
-            && hosts.contains_key(&instance.id)
-    }) {
-        return Err(format!(
-            "INSTANCE_HOME_RUNNING:{}:{}",
-            running.id, running.name
-        ));
-    }
+    drop(operation_guard);
+    // launch_instance_window 只有在实例窗口真实创建后才返回成功。前端据此延迟
+    // 最小化启动器，也能在宿主因插件错误提前退出时弹出可操作的失败提示。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(100);
+    loop {
+        let exited = {
+            let mut hosts = instance_hosts()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let exited = match hosts.get_mut(&id) {
+                Some(child) => child
+                    .try_wait()
+                    .map_err(|error| format!("INSTANCE_HOST_STATUS: {error}"))?
+                    .is_some(),
+                None => true,
+            };
+            if exited {
+                hosts.remove(&id);
+            }
+            exited
+        };
+        if exited {
+            let failure = parse_instance_launch_failure(&app_handle, &id);
+            let payload = serde_json::to_string(&failure).map_err(|error| error.to_string())?;
+            return Err(format!("INSTANCE_LAUNCH_FAILED:{payload}"));
+        }
 
-    let exe = std::env::current_exe().map_err(|error| error.to_string())?;
-    let mut command = std::process::Command::new(exe);
-    command.args(["--mode", "instance", "--instance-id", &id]);
-    command.args(["--port", &allocated_port.to_string()]);
-    if minimized.unwrap_or(false) {
-        command.arg("--start-minimized");
+        #[cfg(windows)]
+        if instance_window_exists(pid) {
+            if let Ok(port) = resolve_running_instance_port(&app_handle, &id) {
+                if workflow::utils::is_dsh_running(port).await {
+                    return Ok(pid);
+                }
+            }
+            // Tauri 宿主窗口会早于 DSH 监听端口创建。此处不能因为端口尚未
+            // 就绪就终止宿主；真实启动失败由上方 child.try_wait() 立即识别，
+            // 正常慢启动则继续等待健康检查或最终超时。
+        }
+        #[cfg(not(windows))]
+        if crate::service::workflow::utils::is_port_in_use(_allocated_port) {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            return Ok(pid);
+        }
+
+        if std::time::Instant::now() >= deadline {
+            stop_instance_window(id.clone())?;
+            return Err(format!("INSTANCE_LAUNCH_TIMEOUT:{id}"));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
-    let child = command
-        .spawn()
-        .map_err(|error| format!("INSTANCE_HOST_SPAWN: {error}"))?;
-    let pid = child.id();
-    hosts.insert(id.clone(), child);
-    log::info!("Instance host {id} started: pid={pid}");
-    Ok(pid)
 }
 
 /// Bring a running instance host window to the foreground from the tray panel.
@@ -677,7 +895,21 @@ pub fn focus_instance_window(id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn quit_app(app_handle: AppHandle) {
+    if ensure_launcher_update_context().is_err() {
+        return;
+    }
     app_handle.exit(0);
+}
+
+/// Only stop child handles owned by this launcher, never discover unrelated processes.
+pub(crate) fn stop_instance_hosts_on_exit() {
+    let ids: Vec<String> = instance_hosts().lock().unwrap_or_else(|error| error.into_inner())
+        .keys().cloned().collect();
+    for id in ids {
+        if let Err(error) = stop_instance_window(id.clone()) {
+            log::error!("Failed to stop instance host {id} on exit: {error}");
+        }
+    }
 }
 
 #[tauri::command]
@@ -915,7 +1147,7 @@ pub fn stop_instance_window(id: String) -> Result<(), String> {
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     prune_instance_hosts(&mut hosts)?;
-    let Some(mut child) = hosts.remove(&id) else {
+    let Some(child) = hosts.get_mut(&id) else {
         return Ok(());
     };
     let pid = child.id();
@@ -938,41 +1170,63 @@ pub fn stop_instance_window(id: String) -> Result<(), String> {
         .map_err(|error| format!("INSTANCE_HOST_STOP: {error}"))?;
 
     let _ = child.wait();
+    hosts.remove(&id);
     log::info!("Instance host {id} stopped: pid={pid}");
     Ok(())
 }
 
 #[tauri::command]
 pub fn list_instances(app_handle: AppHandle) -> Result<config::instance::InstanceRegistry, String> {
-    let registry = config::instance::list(&app_handle)?;
-    config::instance::restore_active(&app_handle)?;
-    Ok(registry)
+    config::instance::list(&app_handle)
 }
 
 #[tauri::command]
-pub fn create_instance(
+pub async fn create_instance(
     app_handle: AppHandle,
     input: config::instance::CreateInstanceInput,
 ) -> Result<config::instance::DshInstance, String> {
-    config::instance::create(&app_handle, input)
+    ensure_launcher_update_context()?;
+    let _operation_guard = instance_operation_lock().lock().await;
+    let home = config::instance::normalize_home_for_export(&input.dsh_home)?;
+    for instance in config::instance::list(&app_handle)?.instances {
+        if instance.dsh_home == home && instance_home_is_running(&app_handle, &instance)?.is_some() {
+            return Err(format!("INSTANCE_RUNNING:{}:{}", instance.id, instance.name));
+        }
+    }
+    let instance = config::instance::create(&app_handle, input)?;
+    crate::desktop::builder::refresh_native_tray_menu(&app_handle);
+    Ok(instance)
 }
 
 #[tauri::command]
-pub fn update_instance(
+pub async fn update_instance(
     app_handle: AppHandle,
     input: config::instance::UpdateInstanceInput,
 ) -> Result<config::instance::DshInstance, String> {
-    if instance_host_is_running(&input.id)? {
-        return Err("INSTANCE_RUNNING: stop the instance before editing it".to_string());
+    ensure_launcher_update_context()?;
+    let _operation_guard = instance_operation_lock().lock().await;
+    let current = config::instance::find(&app_handle, &input.id)?;
+    if let Some(running) = instance_home_is_running(&app_handle, &current)? {
+        return Err(format!("INSTANCE_RUNNING:{}:{}", running.id, running.name));
     }
-    config::instance::update(&app_handle, input)
+    let home = config::instance::normalize_home_for_export(&input.dsh_home)?;
+    for instance in config::instance::list(&app_handle)?.instances {
+        if instance.dsh_home == home && instance_home_is_running(&app_handle, &instance)?.is_some() {
+            return Err(format!("INSTANCE_RUNNING:{}:{}", instance.id, instance.name));
+        }
+    }
+    let instance = config::instance::update(&app_handle, input)?;
+    crate::desktop::builder::refresh_native_tray_menu(&app_handle);
+    Ok(instance)
 }
 
 #[tauri::command]
-pub fn select_instance(
+pub async fn select_instance(
     app_handle: AppHandle,
     id: String,
 ) -> Result<config::instance::DshInstance, String> {
+    ensure_launcher_update_context()?;
+    let _operation_guard = instance_operation_lock().lock().await;
     if workflow::has_owned_process() {
         return Err("INSTANCE_RUNNING: stop the current instance before switching".to_string());
     }
@@ -980,10 +1234,12 @@ pub fn select_instance(
 }
 
 #[tauri::command]
-pub fn remove_instance(
+pub async fn remove_instance(
     app_handle: AppHandle,
     id: String,
 ) -> Result<config::instance::InstanceRegistry, String> {
+    ensure_launcher_update_context()?;
+    let _operation_guard = instance_operation_lock().lock().await;
     let impact = config::instance::removal_impact(&app_handle, &id)?;
     let mut running = None;
     for instance in &impact.instances {
@@ -1011,7 +1267,25 @@ pub fn remove_instance(
                 .to_string(),
         );
     }
-    config::instance::remove(&app_handle, &id)
+    let registry = config::instance::remove(&app_handle, &id)?;
+    crate::desktop::builder::refresh_native_tray_menu(&app_handle);
+    Ok(registry)
+}
+
+#[tauri::command]
+pub async fn remove_instance_registry_only(
+    app_handle: AppHandle,
+    id: String,
+) -> Result<config::instance::InstanceRegistry, String> {
+    ensure_launcher_update_context()?;
+    let _operation_guard = instance_operation_lock().lock().await;
+    let current = config::instance::find(&app_handle, &id)?;
+    if instance_home_is_running(&app_handle, &current)?.is_some() {
+        return Err(format!("INSTANCE_HOME_RUNNING:{}:{}", current.id, current.name));
+    }
+    let registry = config::instance::remove_registry_entry(&app_handle, &id)?;
+    crate::desktop::builder::refresh_native_tray_menu(&app_handle);
+    Ok(registry)
 }
 
 #[tauri::command]
@@ -1019,6 +1293,7 @@ pub fn get_instance_removal_impact(
     app_handle: AppHandle,
     instance_id: String,
 ) -> Result<config::instance::InstanceRemovalImpact, String> {
+    ensure_launcher_update_context()?;
     config::instance::removal_impact(&app_handle, &instance_id)
 }
 
@@ -1029,6 +1304,7 @@ pub fn get_instance_sharing(
     profile: String,
     exclude_id: Option<String>,
 ) -> Result<config::instance::InstanceSharing, String> {
+    ensure_launcher_update_context()?;
     config::instance::sharing(&app_handle, &dsh_home, &profile, exclude_id.as_deref())
 }
 
@@ -1278,12 +1554,12 @@ pub fn get_dsh_plugins(app_handle: AppHandle) -> Vec<plugin::DshPlugin> {
 
 /// 读取指定实例的已安装插件，不改变启动器当前选中实例。
 #[tauri::command]
-pub fn get_dsh_plugins_for_instance(
+pub async fn get_dsh_plugins_for_instance(
     app_handle: AppHandle,
     instance_id: String,
 ) -> Result<Vec<plugin::DshPlugin>, String> {
     let target = config::instance::find(&app_handle, &instance_id)?;
-    let _operation_guard = instance_operation_lock().blocking_lock();
+    let _operation_guard = instance_operation_lock().lock().await;
     let previous = config::instance::active();
     config::instance::set_active(Some(target));
     let plugins = plugin::watch::list(&app_handle);
@@ -1293,18 +1569,19 @@ pub fn get_dsh_plugins_for_instance(
 
 /// 设置指定实例 Profile 中插件的启动加载状态。
 #[tauri::command]
-pub fn set_plugin_enabled_for_instance(
+pub async fn set_plugin_enabled_for_instance(
     app_handle: AppHandle,
     instance_id: String,
     plugin_id: String,
     enabled: bool,
 ) -> Result<(), String> {
     let _runtime_guard = RuntimeUseGuard::acquire()?;
+    ensure_launcher_update_context()?;
+    let _operation_guard = instance_operation_lock().lock().await;
     let target = config::instance::find(&app_handle, &instance_id)?;
     if let Some(running) = instance_home_is_running(&app_handle, &target)? {
         return Err(format!("INSTANCE_RUNNING:{}:{}", running.id, running.name));
     }
-    let _operation_guard = instance_operation_lock().blocking_lock();
     let previous = config::instance::active();
     config::instance::set_active(Some(target));
     let result = plugin::watch::set_enabled(&app_handle, &plugin_id, enabled);
@@ -1320,11 +1597,12 @@ pub async fn remove_plugin_for_instance(
     plugin_id: String,
 ) -> Result<(), String> {
     let _runtime_guard = RuntimeUseGuard::acquire()?;
+    ensure_launcher_update_context()?;
+    let _operation_guard = instance_operation_lock().lock().await;
     let target = config::instance::find(&app_handle, &instance_id)?;
     if let Some(running) = instance_home_is_running(&app_handle, &target)? {
         return Err(format!("INSTANCE_RUNNING:{}:{}", running.id, running.name));
     }
-    let _operation_guard = instance_operation_lock().lock().await;
     let previous = config::instance::active();
     config::instance::set_active(Some(target));
     let result = plugin::remove(&app_handle, &plugin_id).await;
@@ -1358,6 +1636,108 @@ pub async fn get_runtime_info(app_handle: AppHandle) -> Result<config::RuntimeIn
 pub fn runtime_ready(app_handle: AppHandle) -> bool {
     config::active(&app_handle)
         .is_some_and(|runtime| runtime.entry_path.is_file() && runtime.node_path.is_file())
+}
+
+fn provider_store_path(app: &AppHandle) -> std::path::PathBuf {
+    config::get_base_dir(app).join("provider-templates.bin")
+}
+
+#[tauri::command]
+pub fn list_provider_templates(app_handle: AppHandle) -> Result<Vec<crate::service::providers::ProviderTemplate>, String> {
+    ensure_launcher_update_context()?;
+    crate::service::provider_store::list(&provider_store_path(&app_handle))
+}
+
+#[tauri::command]
+pub fn save_provider_template(app_handle: AppHandle, template: crate::service::providers::ProviderTemplate, api_key: Option<String>, editing: Option<bool>) -> Result<(), String> {
+    ensure_launcher_update_context()?;
+    crate::service::provider_store::save(&provider_store_path(&app_handle), template, api_key, editing.unwrap_or(false))
+}
+
+#[tauri::command]
+pub fn remove_provider_template(app_handle: AppHandle, id: String) -> Result<(), String> {
+    ensure_launcher_update_context()?;
+    crate::service::provider_store::remove(&provider_store_path(&app_handle), &id)
+}
+
+#[tauri::command]
+pub async fn get_provider_protocols(app_handle: AppHandle) -> Result<Vec<String>, String> {
+    ensure_launcher_update_context()?;
+    let _runtime_guard = RuntimeUseGuard::acquire()?;
+    let mut command = tokio::process::Command::new(config::get_dsh_node_path(&app_handle));
+    command.args(["--input-type=module", "-e", "import {createRequire} from 'node:module'; import {pathToFileURL} from 'node:url'; const r=createRequire(process.argv[1]); const m=await import(pathToFileURL(r.resolve('@deepseek-ai/dsh-llm-pi-ai')).href); process.stdout.write(JSON.stringify(m.supportedProtocols()));"])
+        .arg(config::get_dsh_binary_path(&app_handle))
+        .current_dir(config::get_dsh_working_dir(&app_handle))
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(15), command.output()).await
+        .map_err(|_| "PROVIDER_PROTOCOL_PROBE_TIMEOUT")?.map_err(|_| "PROVIDER_PROTOCOL_PROBE_FAILED")?;
+    if !output.status.success() { return Err("PROVIDER_PROTOCOL_PROBE_FAILED".into()); }
+    serde_json::from_slice(&output.stdout).map_err(|_| "PROVIDER_PROTOCOL_PROBE_FAILED".into())
+}
+
+#[tauri::command]
+pub async fn import_provider_templates(app_handle: AppHandle, instance_id: String, ids: Vec<String>, overwrite: bool) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+    ensure_launcher_update_context()?;
+    let _runtime_guard = RuntimeUseGuard::acquire()?;
+    let _operation_guard = instance_operation_lock().lock().await;
+    let target = config::instance::find(&app_handle, &instance_id)?;
+    if let Some(running) = instance_home_is_running(&app_handle, &target)? {
+        return Err(format!("INSTANCE_RUNNING:{}:{}", running.id, running.name));
+    }
+    let entries = ids.iter().map(|id| crate::service::provider_store::get(&provider_store_path(&app_handle), id)).collect::<Result<Vec<_>, _>>()?;
+    for entry in &entries { entry.template.validate()?; }
+    if entries.is_empty() { return Ok(()); }
+    let request = serde_json::json!({"entry": config::get_dsh_binary_path(&app_handle), "home": target.dsh_home, "profile": target.profile, "entries": entries, "overwrite": overwrite});
+    let mut command = tokio::process::Command::new(config::get_dsh_node_path(&app_handle));
+    command.args(["--input-type=module", "-e", include_str!("../service/provider-import.mjs"), "--", "--launcher-provider-import"])
+        .current_dir(config::get_dsh_working_dir(&app_handle))
+        .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    let mut child = command.spawn().map_err(|_| "PROVIDER_IMPORT_START_FAILED")?;
+    let mut stdin = child.stdin.take().ok_or("PROVIDER_IMPORT_START_FAILED")?;
+    stdin.write_all(&serde_json::to_vec(&request).map_err(|_| "PROVIDER_IMPORT_FAILED")?).await.map_err(|_| "PROVIDER_IMPORT_FAILED")?;
+    drop(stdin);
+    let output = child.wait_with_output().await.map_err(|_| "PROVIDER_IMPORT_FAILED")?;
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(if error.starts_with("PROVIDER_") && error.len() < 100 { error.to_string() } else { "PROVIDER_IMPORT_FAILED".into() });
+    }
+    Ok(())
+}
+
+/// Probe a draft without saving it. A blank key on edit resolves only in the backend.
+#[tauri::command]
+pub async fn probe_provider_template(app_handle: AppHandle, base_url: String, protocol: String, api_key: Option<String>, saved_id: Option<String>, operation: String, model_id: Option<String>) -> Result<serde_json::Value, String> {
+    use tokio::io::AsyncWriteExt;
+    ensure_launcher_update_context()?;
+    let _runtime_guard = RuntimeUseGuard::acquire()?;
+    let key = match api_key.filter(|key| !key.is_empty()) {
+        Some(key) => key,
+        None => crate::service::provider_store::get(&provider_store_path(&app_handle), &saved_id.ok_or("PROVIDER_KEY_REQUIRED")?)?.api_key,
+    };
+    let request = serde_json::json!({"baseUrl":base_url,"protocol":protocol,"apiKey":key,"operation":operation,"modelId":model_id});
+    let mut command = tokio::process::Command::new(config::get_dsh_node_path(&app_handle));
+    command.args(["--input-type=module", "-e", include_str!("../service/provider-probe.mjs"), "--", "--launcher-provider-probe"])
+        .current_dir(config::get_dsh_working_dir(&app_handle))
+        .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        let mut child = command.spawn().map_err(|_| "PROVIDER_PROBE_FAILED")?;
+        let mut stdin = child.stdin.take().ok_or("PROVIDER_PROBE_FAILED")?;
+        stdin.write_all(&serde_json::to_vec(&request).map_err(|_| "PROVIDER_PROBE_FAILED")?).await.map_err(|_| "PROVIDER_PROBE_FAILED")?;
+        drop(stdin);
+        child.wait_with_output().await.map_err(|_| "PROVIDER_PROBE_FAILED")
+    }).await.map_err(|_| "PROVIDER_PROBE_TIMEOUT")??;
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(if error.starts_with("PROVIDER_") && error.len() < 100 && error.bytes().all(|b| b.is_ascii_uppercase() || b == b'_') { error.to_string() } else { "PROVIDER_PROBE_FAILED".into() });
+    }
+    serde_json::from_slice(&output.stdout).map_err(|_| "PROVIDER_PROBE_FAILED".into())
 }
 
 /// 当前桌面端配置
@@ -1563,6 +1943,22 @@ pub async fn read_service_logs(
     }
 }
 
+/// 读取指定实例的启动日志，不依赖当前选中实例。
+#[tauri::command]
+pub fn read_instance_startup_log(
+    app_handle: AppHandle,
+    instance_id: String,
+) -> Result<String, String> {
+    ensure_launcher_update_context()?;
+    config::instance::find(&app_handle, &instance_id)?;
+    let path = config::get_base_dir(&app_handle)
+        .join("logs")
+        .join(format!("{instance_id}.log"));
+    Ok(redact_instance_log(
+        &std::fs::read_to_string(path).unwrap_or_default(),
+    ))
+}
+
 /// 清空 dsh 服务日志
 #[tauri::command]
 pub async fn clear_service_logs(app_handle: AppHandle) -> Result<(), String> {
@@ -1681,4 +2077,46 @@ pub async fn open_external_url(app_handle: AppHandle, url: String) -> Result<(),
         .opener()
         .open_url(url, None::<&str>)
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn stopping_owned_host_reaps_process_and_removes_tracking() {
+        use std::os::windows::process::CommandExt;
+        let child = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 60"])
+            .creation_flags(0x08000000)
+            .spawn().expect("spawn isolated test host");
+        let id = format!("test-owned-host-{}", child.id());
+        super::instance_hosts().lock().unwrap_or_else(|error| error.into_inner()).insert(id.clone(), child);
+        super::stop_instance_window(id.clone()).expect("stop isolated host");
+        assert!(!super::instance_hosts().lock().unwrap_or_else(|error| error.into_inner()).contains_key(&id));
+        super::stop_instance_window(id).expect("stop remains idempotent");
+    }
+    use super::{filter_installed_failed_plugins, parse_failed_plugins};
+    use std::collections::HashSet;
+
+    #[test]
+    fn extracts_only_the_failed_plugin_entry() {
+        let log = "failed to apply loader entry include (cordis:include): failed to import loader entry dsh-auto-collapse (dsh-auto-collapse): missing export";
+        assert_eq!(parse_failed_plugins(log), vec!["dsh-auto-collapse"]);
+    }
+
+    #[test]
+    fn reports_only_failed_entries_that_are_installed_plugins() {
+        let log = "failed to import loader entry cordis: missing\nfailed to import loader entry dsh-auto-collapse: missing";
+        let installed = HashSet::from(["dsh-auto-collapse".to_string()]);
+        assert_eq!(
+            filter_installed_failed_plugins(log, &installed),
+            vec!["dsh-auto-collapse"]
+        );
+    }
+
+    #[test]
+    fn recognizes_newer_plugin_tree_failure_shape_without_stack_trace_modules() {
+        let log = "Error: plugin tree failed to load dsh-plugin-balance (reading sessions)\nCaused by: requested module '@deepseek-ai/dsh-settings'";
+        assert_eq!(parse_failed_plugins(log), vec!["dsh-plugin-balance"]);
+    }
 }

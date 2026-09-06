@@ -99,6 +99,11 @@ function UpdatesSection() {
     }
   }
 
+  function openUpstreamRelease() {
+    if (updateInfo?.releaseUrl)
+      void invoke('open_external_url', { url: updateInfo.releaseUrl })
+  }
+
   const status = updating
     ? t('update.dsh_updating')
     : checking
@@ -145,11 +150,15 @@ function UpdatesSection() {
           {updateInfo && !updating && (
             <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--launcher-brand)]/25 bg-[var(--launcher-selected)] px-4 py-3 text-sm">
               <span>
-                {updateInfo.source === 'npm'
-                  ? t('launcher.more_updates.available_detail_npm', { tag: updateInfo.tag })
-                  : t('launcher.more_updates.available_detail', { tag: updateInfo.tag, commit: updateInfo.commit?.slice(0, 7) })}
+                {updateInfo.source === 'upstream'
+                  ? t('launcher.more_updates.available_detail_upstream', { tag: updateInfo.tag })
+                  : updateInfo.source === 'npm'
+                    ? t('launcher.more_updates.available_detail_npm', { tag: updateInfo.tag })
+                    : t('launcher.more_updates.available_detail', { tag: updateInfo.tag, commit: updateInfo.commit?.slice(0, 7) })}
               </span>
-              <Button className="h-8 rounded-md" variant="secondary" onPress={() => { void updater.handleUpdate() }}>{t('update.now')}</Button>
+              {updateInfo.installable
+                ? <Button className="h-8 rounded-md" variant="secondary" onPress={() => { void updater.handleUpdate() }}>{t('update.now')}</Button>
+                : <Button className="h-8 rounded-md" variant="secondary" onPress={openUpstreamRelease}>{t('launcher.more_updates.view_release')}</Button>}
             </div>
           )}
 

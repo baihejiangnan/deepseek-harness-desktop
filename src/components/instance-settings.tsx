@@ -12,6 +12,7 @@ import { formatDshVersionLabel } from '@/utils/dsh-version'
 import { runViewTransition } from '@/utils/view-transition'
 import { useDshPlugins } from '../hooks/use-dsh-plugins'
 import { SharingNotice } from './instance-wizard'
+import ProviderImport from './provider-import'
 
 type SettingsSection = 'environment' | 'plugins' | 'export'
 
@@ -80,6 +81,7 @@ function EnvironmentSettings({ instance, sharing, isRunning, dshVersion }: Omit<
   const [name, setName] = useState(instance.name)
   const [dshHome, setDshHome] = useState(instance.dshHome)
   const [profile, setProfile] = useState(instance.profile)
+  const [repairAssistant, setRepairAssistant] = useState(instance.repairAssistant ?? false)
   const [saving, setSaving] = useState(false)
 
   async function chooseHome() {
@@ -92,7 +94,7 @@ function EnvironmentSettings({ instance, sharing, isRunning, dshVersion }: Omit<
     setSaving(true)
     try {
       await runViewTransition(async () => {
-        await store.launcher.update(instance.id, name, dshHome, profile)
+        await store.launcher.update(instance.id, name, dshHome, profile, repairAssistant)
       })
       toast(t('launcher.instance_saved'), { variant: 'accent' })
     }
@@ -106,9 +108,15 @@ function EnvironmentSettings({ instance, sharing, isRunning, dshVersion }: Omit<
 
   return (
     <div className="space-y-6">
+      <ProviderImport instanceId={instance.id} disabled={isRunning || saving} />
       <SectionHeading title={t('launcher.instance_settings_nav.environment')} description={t('launcher.environment_description')} />
       <If cond={isRunning}><div className="rounded-md border border-[#ead39e] bg-[#fff8e8] px-3 py-2 text-xs text-[#72521b]">{t('launcher.settings_running_hint')}</div></If>
       <div className="grid gap-5 md:grid-cols-2">
+        <label className="text-sm md:col-span-2">
+          <input type="checkbox" className="mr-2" disabled={isRunning || saving} checked={repairAssistant} onChange={event => setRepairAssistant(event.target.checked)} />
+          {t('repair.enable')}
+          <span className="mt-2 block text-xs text-[var(--launcher-muted)]">{t('repair.independent')}</span>
+        </label>
         <Field label={t('launcher.instance_name')} value={name} onChange={setName} disabled={isRunning} />
         <div>
           <label className="mb-2 block text-xs font-medium">{t('launcher.version')}</label>

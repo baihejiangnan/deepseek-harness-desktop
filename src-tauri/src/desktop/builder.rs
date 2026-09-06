@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tauri::{
     ipc::Invoke,
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
-    Manager, PhysicalPosition, Runtime, Url, WebviewUrl, WebviewWindowBuilder, Wry,
+    Emitter, Manager, PhysicalPosition, Runtime, Url, WebviewUrl, WebviewWindowBuilder, Wry,
 };
 
 use crate::desktop::mode::RunMode;
@@ -48,6 +48,33 @@ pub fn setup(app_handle: tauri::AppHandle) {
     });
 }
 
+fn native_tray_menu(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::menu::Menu<Wry>> {
+    let locale = if crate::config::get_store_dat_setting(app).language.starts_with("zh") {
+        include_str!("../../../src/i18n/locales/zh-CN.json")
+    } else {
+        include_str!("../../../src/i18n/locales/en-US.json")
+    };
+    let labels: serde_json::Value = serde_json::from_str(locale).expect("bundled locale JSON");
+    let quit = tauri::menu::MenuItem::with_id(app, "native-quit", labels["tray.quit"].as_str().unwrap_or("Exit"), true, None::<&str>)?;
+    let open = tauri::menu::MenuItem::with_id(app, "native-open", labels["tray.open_launcher"].as_str().unwrap(), true, None::<&str>)?;
+    let settings = tauri::menu::MenuItem::with_id(app, "native-settings", labels["tray.settings"].as_str().unwrap(), true, None::<&str>)?;
+    let menu = tauri::menu::Menu::with_items(app, &[&open, &settings])?;
+    for instance in crate::config::instance::list(app).map_err(std::io::Error::other)?.instances {
+        let item = tauri::menu::MenuItem::with_id(app, format!("native-instance:{}", instance.id), &instance.name, true, None::<&str>)?;
+        menu.append(&item)?;
+    }
+    menu.append(&quit)?;
+    Ok(menu)
+}
+
+pub(crate) fn refresh_native_tray_menu(app: &tauri::AppHandle<Wry>) {
+    if let Some(tray) = app.tray_by_id("launcher-tray") {
+        if let Err(error) = native_tray_menu(app).and_then(|menu| tray.set_menu(Some(menu))) {
+            log::warn!("Failed to refresh native tray menu: {error}");
+        }
+    }
+}
+
 /// setup tray
 pub fn tray(app: &tauri::AppHandle<Wry>) -> tauri::Result<()> {
     // 启动器托盘使用启动器专属图标；实例窗口仍使用默认图标。
@@ -80,7 +107,7 @@ pub fn tray(app: &tauri::AppHandle<Wry>) -> tauri::Result<()> {
     fn handle_tray_icon_event<R: Runtime>(tray: &tauri::tray::TrayIcon<R>, event: &TrayIconEvent) {
         if let TrayIconEvent::Click {
             position,
-            button: MouseButton::Left | MouseButton::Right,
+            button: MouseButton::Left,
             ..
         } = event
         {
@@ -88,10 +115,37 @@ pub fn tray(app: &tauri::AppHandle<Wry>) -> tauri::Result<()> {
         }
     }
 
+    // 原生右键菜单不依赖 WebView、前端服务或 JavaScript。
+    let menu = native_tray_menu(app)?;
     // 构建托盘图标
-    let _ = TrayIconBuilder::new()
+    let _ = TrayIconBuilder::with_id("launcher-tray")
         .icon(icon)
-        // The native menu cannot match the launcher's rounded cloud-white UI.
+        .menu(&menu)
+        .on_menu_event(|app, event| {
+            if event.id.as_ref() == "native-quit" {
+                crate::bridge::cmd::quit_app(app.clone());
+            } else if let Some(id) = event.id.as_ref().strip_prefix("native-instance:") {
+                let id = id.to_string();
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let result = if crate::bridge::cmd::list_running_instances().unwrap_or_default().contains(&id) {
+                        crate::bridge::cmd::focus_instance_window(id)
+                    } else {
+                        crate::bridge::cmd::launch_instance_window(app.clone(), id, None, None).await.map(|_| ())
+                    };
+                    if let Err(error) = result {
+                        rfd::AsyncMessageDialog::new().set_title("DSH Launcher").set_description(&error).show().await;
+                    }
+                });
+            } else {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.unminimize();
+                    let _ = window.set_focus();
+                }
+                let _ = app.emit(if event.id.as_ref() == "native-settings" { "tray-open-settings" } else { "tray-open-launcher" }, ());
+            }
+        })
         .show_menu_on_left_click(false)
         .tooltip("DSH Launcher")
         .on_tray_icon_event(move |tray, event| handle_tray_icon_event(tray, &event))
@@ -217,8 +271,22 @@ pub fn build_instance_window(
     port: u16,
     minimized: bool,
 ) -> tauri::Result<tauri::WebviewWindow<Wry>> {
-    let url = Url::parse(&crate::config::get_dsh_service_url(port))
+    let service_url = crate::service::workflow::runtime_web_url()
+        .unwrap_or_else(|| crate::config::get_dsh_service_url(port));
+    let url = Url::parse(&service_url)
         .expect("DSH service URL is generated from a loopback address and numeric port");
+    // DSH resolves its locale from the browser environment. Keep newly created
+    // instance WebViews aligned with the launcher's persisted language without
+    // changing DSH's own routes or configuration contract.
+    let dsh_language = if crate::config::get_store_dat_setting(app).language.starts_with("en") {
+        "en-US"
+    } else {
+        "zh-CN"
+    };
+    let locale_script = format!(
+        "(function(){{const lang={};try{{Object.defineProperty(navigator,'language',{{configurable:true,get:()=>lang}});Object.defineProperty(navigator,'languages',{{configurable:true,get:()=>[lang,lang.split('-')[0]]}})}}catch{{}}try{{document.documentElement.lang=lang}}catch{{}}}})();",
+        serde_json::to_string(dsh_language).expect("static locale serializes")
+    );
     // WebView2 要求同一用户数据目录的并发创建使用相同环境选项，多个实例宿主
     // 共享默认目录时偶发 0x80070057 创建失败；这里给每个实例分配独立数据目录，
     // 并保留短重试兜底。
@@ -240,6 +308,7 @@ pub fn build_instance_window(
         .min_inner_size(960.0, 640.0)
         .resizable(true)
         .data_directory(webview_data_dir)
+        .initialization_script(&locale_script)
         .on_new_window(move |url, features| on_new_window(app_for_events.clone(), url, features))
         .on_download(|webview, event| on_download(webview, event))
         .build()
@@ -300,6 +369,7 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::cmd::update_instance,
         crate::bridge::cmd::select_instance,
         crate::bridge::cmd::remove_instance,
+        crate::bridge::cmd::remove_instance_registry_only,
         crate::bridge::cmd::get_instance_removal_impact,
         crate::bridge::cmd::get_instance_sharing,
         crate::bridge::cmd::choose_dsh_home,
@@ -323,6 +393,12 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::cmd::get_runtime_info,
         crate::bridge::cmd::runtime_ready,
         crate::bridge::cmd::get_app_config,
+        crate::bridge::cmd::list_provider_templates,
+        crate::bridge::cmd::save_provider_template,
+        crate::bridge::cmd::remove_provider_template,
+        crate::bridge::cmd::get_provider_protocols,
+        crate::bridge::cmd::probe_provider_template,
+        crate::bridge::cmd::import_provider_templates,
         crate::bridge::cmd::update_app_config,
         crate::bridge::cmd::get_cli_link_status,
         crate::bridge::cmd::open_in_browser,
@@ -330,6 +406,7 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::cmd::reveal_data_dir,
         crate::bridge::cmd::reveal_in_folder,
         crate::bridge::cmd::read_service_logs,
+        crate::bridge::cmd::read_instance_startup_log,
         crate::bridge::cmd::read_run_logs,
         crate::bridge::cmd::clear_service_logs,
         crate::bridge::cmd::set_language,
@@ -354,6 +431,7 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
             let mode = crate::desktop::mode::current();
             match mode {
                 RunMode::Launcher => {
+                    crate::config::instance::restore_active(&app_handle).map_err(std::io::Error::other)?;
                     build_main_window(&app_handle)?;
                     build_tray_window(&app_handle)?;
                     let opacity =
@@ -387,7 +465,7 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
                     let port = crate::service::workflow::runtime_port()
                         .ok_or_else(|| std::io::Error::other("INSTANCE_PORT_UNAVAILABLE"))?;
                     // 等 DSH Web 真正可访问再建窗，避免 WebView 先加载到
-                    // ERR_CONNECTION_REFUSED 错误页；超时仍开窗以便诊断。
+                    // ERR_CONNECTION_REFUSED 错误页；失败时直接退出宿主。
                     let web_ready = tauri::async_runtime::block_on(async {
                         crate::service::workflow::wait_until_web_ready(
                             port,
@@ -397,12 +475,17 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
                         .await
                     });
                     if !web_ready {
-                        log::warn!(
-                            "DSH web service did not become ready within 90s (port {port}); opening window anyway"
-                        );
+                        crate::service::workflow::stop_on_exit(app_handle.clone(), port);
+                        return Err(std::io::Error::other(format!(
+                            "INSTANCE_WEB_START_FAILED: DSH web service exited or did not become ready within 90s (port {port}); check the instance run log"
+                        ))
+                        .into());
                     }
                     let start_minimized = crate::desktop::mode::window_start_minimized();
-                    build_instance_window(&app_handle, &instance, port, start_minimized)?;
+                    if let Err(error) = build_instance_window(&app_handle, &instance, port, start_minimized) {
+                        crate::service::workflow::stop_on_exit(app_handle.clone(), port);
+                        return Err(error.into());
+                    }
                     crate::service::scheduler::start(&app_handle);
                 }
             }

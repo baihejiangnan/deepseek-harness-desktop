@@ -3,6 +3,8 @@ pub mod collab;
 pub mod download;
 pub mod export;
 pub mod plugin;
+pub mod providers;
+pub mod provider_store;
 pub mod scheduler;
 pub mod update;
 pub mod workflow;

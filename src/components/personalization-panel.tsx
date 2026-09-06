@@ -3,8 +3,10 @@ import { Button, ListBox, Select } from '@heroui/react'
 import { invoke } from '@tauri-apps/api/core'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import ProviderTemplates from './provider-templates'
 
 interface PersonalizationConfig {
+  language: 'zh-CN' | 'en-US'
   launcher_opacity: number
   startup_mode: 'manager' | 'last_instance'
   launcher_theme: LauncherTheme
@@ -19,7 +21,7 @@ type LauncherTheme
     | 'pale-blue-mint' | 'aqua-green-almond' | 'neon-aqua-green' | 'deep-green-mist'
     | 'mist-blue' | 'forest-teal' | 'charcoal' | 'warm-clay' | 'rose-gray'
 
-type SettingsSection = 'settings' | 'personalization'
+type SettingsSection = 'settings' | 'personalization' | 'providers'
 
 const themeOptions: Array<{ id: LauncherTheme, nameKey: string, colors: [string, string, string] }> = [
   { id: 'lake-blue-soft-pink', nameKey: 'lake_blue_soft_pink', colors: ['#27a6cc', '#80bfd4', '#fcc5c5'] },
@@ -38,17 +40,19 @@ const themeOptions: Array<{ id: LauncherTheme, nameKey: string, colors: [string,
 ]
 
 export default function PersonalizationPanel() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const [section, setSection] = useState<SettingsSection>('settings')
   const [opacity, setOpacity] = useState(100)
   const [startupMode, setStartupMode] = useState<PersonalizationConfig['startup_mode']>('manager')
   const [theme, setTheme] = useState<LauncherTheme>('mist-blue-sakura-pink')
   const [blur, setBlur] = useState(false)
   const [confirmBeforeRemoval, setConfirmBeforeRemoval] = useState(true)
+  const [language, setLanguage] = useState<'zh-CN' | 'en-US'>('zh-CN')
   const [saved, setSaved] = useState(false)
 
   useEffect(() => {
     void invoke<PersonalizationConfig>('get_app_config').then((config) => {
+      setLanguage(config.language?.startsWith('en') ? 'en-US' : 'zh-CN')
       setOpacity(config.launcher_opacity ?? 100)
       setStartupMode(config.startup_mode ?? 'manager')
       setTheme(config.launcher_theme ?? 'mist-blue-sakura-pink')
@@ -100,6 +104,11 @@ export default function PersonalizationPanel() {
     void saveConfig({ confirm_before_instance_removal: value })
   }
 
+  function changeLanguage(value: 'zh-CN' | 'en-US') {
+    setLanguage(value)
+    void i18n.changeLanguage(value)
+  }
+
   return (
     <div className="flex min-h-0 min-w-0 flex-1 bg-[var(--launcher-canvas)] text-[var(--launcher-ink)]">
       <nav className="w-[210px] flex-none border-r border-[var(--launcher-border)] bg-[var(--launcher-sidebar)] p-3" aria-label={t('launcher.nav.settings')}>
@@ -107,6 +116,7 @@ export default function PersonalizationPanel() {
         {([
           { id: 'settings' as const, icon: Gear },
           { id: 'personalization' as const, icon: Palette },
+          { id: 'providers' as const, icon: Gear },
         ]).map((item) => {
           const Icon = item.icon
           return (
@@ -131,6 +141,7 @@ export default function PersonalizationPanel() {
             <p className="mt-2 text-sm text-[var(--launcher-muted)]">{t(`launcher.personalization.${section}_description`)}</p>
           </div>
 
+          {section === 'providers' && <ProviderTemplates />}
           {section === 'personalization' && (
             <section className="rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)] p-6">
               <h2 className="m-0 text-sm font-semibold">{t('launcher.personalization.appearance')}</h2>
@@ -222,6 +233,25 @@ export default function PersonalizationPanel() {
 
           {section === 'settings' && (
             <section className="mt-5 rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)] p-6">
+              <h2 className="m-0 text-sm font-semibold">{t('launcher.personalization.language')}</h2>
+              <p className="mt-2 text-xs leading-5 text-[var(--launcher-muted)]">{t('launcher.personalization.language_hint')}</p>
+              <Select selectedKey={language} onSelectionChange={key => changeLanguage(String(key) as 'zh-CN' | 'en-US')} className="launcher-select mt-4 w-full">
+                <Select.Trigger className="h-10 rounded-md">
+                  <Select.Value />
+                  <Select.Indicator />
+                </Select.Trigger>
+                <Select.Popover className="launcher-select-popover rounded-md">
+                  <ListBox>
+                    <ListBox.Item id="zh-CN" textValue={t('launcher.personalization.language_zh')} className="rounded-md">{t('launcher.personalization.language_zh')}</ListBox.Item>
+                    <ListBox.Item id="en-US" textValue={t('launcher.personalization.language_en')} className="rounded-md">{t('launcher.personalization.language_en')}</ListBox.Item>
+                  </ListBox>
+                </Select.Popover>
+              </Select>
+            </section>
+          )}
+
+          {section === 'settings' && (
+            <section className="mt-5 rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)] p-6">
               <h2 className="m-0 text-sm font-semibold">{t('launcher.personalization.removal')}</h2>
               <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-md border border-[var(--launcher-border)] bg-white/60 px-4 py-3">
                 <input type="checkbox" className="mt-0.5 size-4 accent-[var(--launcher-brand)]" checked={confirmBeforeRemoval} onChange={event => changeConfirmBeforeRemoval(event.target.checked)} />
@@ -233,10 +263,12 @@ export default function PersonalizationPanel() {
             </section>
           )}
 
-          <div className="mt-4 flex items-center justify-end gap-3 text-xs text-[var(--launcher-muted)]">
-            {saved && <span>{t('launcher.personalization.saved')}</span>}
-            <Button className="h-8 rounded-md" variant="ghost" onPress={() => { void saveConfig({ launcher_opacity: opacity, startup_mode: startupMode }) }}>{t('launcher.personalization.save')}</Button>
-          </div>
+          {section !== 'providers' && (
+            <div className="mt-4 flex items-center justify-end gap-3 text-xs text-[var(--launcher-muted)]">
+              {saved && <span>{t('launcher.personalization.saved')}</span>}
+              <Button className="h-8 rounded-md" variant="ghost" onPress={() => { void saveConfig({ launcher_opacity: opacity, startup_mode: startupMode }) }}>{t('launcher.personalization.save')}</Button>
+            </div>
+          )}
         </div>
       </main>
     </div>

@@ -486,6 +486,58 @@ const DSH_PKG_GITHUB_API: &str = "https://api.github.com/repos/hairyf/deepseek-h
 /// pkg 仓库 HTML 来源；`releases.atom` 走 github.com 而非 api.github.com，不受未认证限流约束。
 const DSH_PKG_REPO: &str = "https://github.com/hairyf/deepseek-harness-pkg";
 const DSH_NPM_LATEST: &str = "https://registry.npmjs.org/@deepseek-ai%2Fdsh/latest";
+const DSH_UPSTREAM_GITHUB_API: &str = "https://api.github.com/repos/deepseek-ai/deepseek-harness";
+const DSH_UPSTREAM_REPO: &str = "https://github.com/deepseek-ai/deepseek-harness";
+const UPDATE_METADATA_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UpstreamDshRelease {
+    pub tag: String,
+    pub version: String,
+    pub commit: Option<String>,
+    pub url: String,
+}
+
+/// 查询上游最新发布（包括 pre-release）。GitHub 的 `/releases/latest` 会排除
+/// pre-release，因此这里读取按发布时间倒序的 release 列表首项。
+pub async fn fetch_latest_upstream_dsh_release() -> Result<UpstreamDshRelease, String> {
+    let client = github_client()?;
+    let releases: serde_json::Value = client
+        .get(format!("{DSH_UPSTREAM_GITHUB_API}/releases?per_page=1"))
+        .send()
+        .await
+        .map_err(|e| format!("DSH_UPSTREAM_RELEASE_FAILED:{e}"))?
+        .error_for_status()
+        .map_err(|e| format!("DSH_UPSTREAM_RELEASE_FAILED:{e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("DSH_UPSTREAM_RELEASE_FAILED:{e}"))?;
+    let release = releases
+        .as_array()
+        .and_then(|items| items.first())
+        .ok_or_else(|| "DSH_UPSTREAM_RELEASE_FAILED:no releases found".to_string())?;
+    let tag = release
+        .get("tag_name")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "DSH_UPSTREAM_RELEASE_FAILED:missing tag_name".to_string())?
+        .to_string();
+    let version = parse_upstream_version_from_tag(&tag)
+        .ok_or_else(|| format!("DSH_UPSTREAM_RELEASE_FAILED:unsupported tag {tag}"))?;
+    let url = release
+        .get("html_url")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{DSH_UPSTREAM_REPO}/releases/tag/{tag}"));
+    let commit = fetch_tag_commit_from(&client, DSH_UPSTREAM_GITHUB_API, &tag)
+        .await
+        .ok();
+    Ok(UpstreamDshRelease {
+        tag,
+        version,
+        commit,
+        url,
+    })
+}
 
 /// 最新 Harness 发行版信息（版本 tag + 对应 commit hash）
 #[derive(Debug, Clone, serde::Serialize)]
@@ -502,20 +554,40 @@ pub struct LatestDshPkg {
 /// Query the source of truth for package-manager installations. Launcher-managed
 /// installations intentionally use the signed package release above instead.
 pub async fn fetch_latest_npm_dsh_version() -> Result<String, String> {
-    let value: serde_json::Value = reqwest::Client::builder()
+    let client = reqwest::Client::builder()
         .user_agent("dsh-launcher")
-        .timeout(std::time::Duration::from_secs(5))
+        .timeout(UPDATE_METADATA_TIMEOUT)
         .build()
-        .map_err(|error| format!("DSH_NPM_LATEST_FAILED:{error}"))?
-        .get(DSH_NPM_LATEST)
-        .send()
-        .await
-        .map_err(|error| format!("DSH_NPM_LATEST_FAILED:{error}"))?
-        .error_for_status()
-        .map_err(|error| format!("DSH_NPM_LATEST_FAILED:{error}"))?
-        .json()
-        .await
         .map_err(|error| format!("DSH_NPM_LATEST_FAILED:{error}"))?;
+    let mut last_error = None;
+    let mut value = None;
+    for attempt in 1..=2 {
+        match client.get(DSH_NPM_LATEST).send().await {
+            Ok(response) => match response.error_for_status() {
+                Ok(response) => match response.json::<serde_json::Value>().await {
+                    Ok(response_value) => {
+                        value = Some(response_value);
+                        break;
+                    }
+                    Err(error) => last_error = Some(error.to_string()),
+                },
+                Err(error) => last_error = Some(error.to_string()),
+            },
+            Err(error) => last_error = Some(error.to_string()),
+        }
+        if attempt == 1 {
+            log::warn!(
+                "npm update metadata request failed, retrying: {:?}",
+                last_error
+            );
+        }
+    }
+    let value = value.ok_or_else(|| {
+        format!(
+            "DSH_NPM_LATEST_FAILED:{}",
+            last_error.unwrap_or_else(|| "unknown registry error".to_string())
+        )
+    })?;
     value
         .get("version")
         .and_then(serde_json::Value::as_str)
@@ -533,7 +605,7 @@ pub async fn fetch_latest_npm_dsh_version() -> Result<String, String> {
 fn github_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .user_agent("deepseek-harness-desktop")
-        .timeout(std::time::Duration::from_secs(5))
+        .timeout(UPDATE_METADATA_TIMEOUT)
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))
 }
@@ -554,8 +626,16 @@ async fn fetch_releases_latest(client: &reqwest::Client) -> Result<serde_json::V
 
 /// 通过 commits 端点把 release tag 解析为完整 commit hash。
 async fn fetch_tag_commit(client: &reqwest::Client, tag: &str) -> Result<String, String> {
+    fetch_tag_commit_from(client, DSH_PKG_GITHUB_API, tag).await
+}
+
+async fn fetch_tag_commit_from(
+    client: &reqwest::Client,
+    api_base: &str,
+    tag: &str,
+) -> Result<String, String> {
     let commit: serde_json::Value = client
-        .get(format!("{DSH_PKG_GITHUB_API}/commits/{tag}"))
+        .get(format!("{api_base}/commits/{tag}"))
         .send()
         .await
         .map_err(|e| format!("Failed to request release commit: {}", e))?
@@ -769,8 +849,31 @@ pub async fn fetch_latest_dsh_pkg_info() -> Result<LatestDshPkg, String> {
 /// tag 约定为 `dsh-<version>-<commit 后缀>`；格式不符时返回 `None`，
 /// 调用方据此回退到仅 commit 比对的旧行为，避免误判。
 pub fn parse_version_from_tag(tag: &str) -> Option<String> {
-    let version = tag.strip_prefix("dsh-")?.rsplit_once('-')?.0;
-    (!version.is_empty()).then(|| version.to_string())
+    let value = tag.strip_prefix("dsh-")?;
+    if let Some(version) = parse_upstream_version_from_tag(tag) {
+        return Some(version);
+    }
+    let version = value.rsplit_once('-')?.0;
+    semver::Version::parse(version)
+        .ok()
+        .map(|value| value.to_string())
+}
+
+fn parse_upstream_version_from_tag(tag: &str) -> Option<String> {
+    let version = tag.strip_prefix("dsh-v")?;
+    semver::Version::parse(version)
+        .ok()
+        .map(|value| value.to_string())
+}
+
+pub fn is_version_newer(candidate: &str, installed: &str) -> bool {
+    match (
+        semver::Version::parse(candidate.trim_start_matches('v')),
+        semver::Version::parse(installed.trim_start_matches('v')),
+    ) {
+        (Ok(candidate), Ok(installed)) => candidate > installed,
+        _ => false,
+    }
 }
 
 /// 更新判定结果
@@ -992,9 +1095,20 @@ mod tests {
             parse_version_from_tag("dsh-0.1.0-rc.6-31773193667").as_deref(),
             Some("0.1.0-rc.6")
         );
+        assert_eq!(
+            parse_version_from_tag("dsh-v0.1.2-alpha.1").as_deref(),
+            Some("0.1.2-alpha.1")
+        );
         assert_eq!(parse_version_from_tag("dsh-0.2.0"), None);
         assert_eq!(parse_version_from_tag("0.1.0-rc.7-abc"), None);
         assert_eq!(parse_version_from_tag(""), None);
+    }
+
+    #[test]
+    fn compares_prerelease_versions() {
+        assert!(is_version_newer("0.1.2-alpha.1", "0.1.1-rc.2"));
+        assert!(!is_version_newer("0.1.1-rc.2", "0.1.2-alpha.1"));
+        assert!(!is_version_newer("invalid", "0.1.1-rc.2"));
     }
 
     #[test]

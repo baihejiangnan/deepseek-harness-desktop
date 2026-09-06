@@ -4,12 +4,35 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import i18next from 'i18next'
 import { defineStore } from 'valtio-define'
 import { toast } from '@/utils'
+import { providerErrorMessage } from '@/utils/provider-error'
 import { harness } from '../harness'
 import { updater } from '../updater'
 
 const emptyRegistry: InstanceRegistry = {
   instances: [],
   activeInstanceId: null,
+}
+
+export interface InstanceLaunchFailure {
+  instanceId: string
+  stage: string
+  message: string
+  plugins: string[]
+  log: string
+}
+
+function parseLaunchFailure(error: unknown): InstanceLaunchFailure | null {
+  const message = String(error)
+  const marker = 'INSTANCE_LAUNCH_FAILED:'
+  const index = message.indexOf(marker)
+  if (index < 0)
+    return null
+  try {
+    return JSON.parse(message.slice(index + marker.length)) as InstanceLaunchFailure
+  }
+  catch {
+    return null
+  }
 }
 
 export const launcher = defineStore({
@@ -22,6 +45,7 @@ export const launcher = defineStore({
     view: 'launcher' as LauncherView,
     error: '',
     sharing: null as InstanceSharing | null,
+    launchFailure: null as InstanceLaunchFailure | null,
   }),
   actions: {
     async load() {
@@ -75,11 +99,12 @@ export const launcher = defineStore({
       })
     },
 
-    async create(name: string, dshHome: string, profile: string) {
+    async create(name: string, dshHome: string, profile: string, repairAssistant = false, providerIds: string[] = []) {
       this.error = ''
       try {
         const instance = await invoke<DshInstance>('create_instance', {
           input: {
+            repairAssistant,
             name,
             dshHome,
             profile,
@@ -88,6 +113,14 @@ export const launcher = defineStore({
         })
         await this.load()
         this.registry.activeInstanceId = instance.id
+        if (providerIds.length > 0) {
+          try {
+            await invoke('import_provider_templates', { instanceId: instance.id, ids: providerIds, overwrite: false })
+          }
+          catch (error) {
+            this.error = `${i18next.t('providers.created_import_failed')} ${providerErrorMessage(error)}`
+          }
+        }
       }
       catch (error) {
         this.error = String(error)
@@ -95,13 +128,13 @@ export const launcher = defineStore({
       }
     },
 
-    async update(id: string, name: string, dshHome: string, profile: string) {
+    async update(id: string, name: string, dshHome: string, profile: string, repairAssistant?: boolean) {
       if (updater.updating)
         return
       this.error = ''
       try {
         const instance = await invoke<DshInstance>('update_instance', {
-          input: { id, name, dshHome, profile },
+          input: { id, name, dshHome, profile, repairAssistant },
         })
         this.registry = {
           ...this.registry,
@@ -153,23 +186,47 @@ export const launcher = defineStore({
       }
     },
 
-    /** 启动指定实例的宿主进程；协作编排需要按节点拉起任意实例，因此与“启动当前实例”共用同一后端入口 */
-    async launchInstance(id: string, minimize = false, startMinimized = false, port?: number) {
+    async removeRegistryOnly(id: string): Promise<boolean> {
       if (updater.updating)
-        return
+        return false
+      this.error = ''
+      try {
+        this.registry = await invoke<InstanceRegistry>('remove_instance_registry_only', { id })
+        return true
+      }
+      catch (error) {
+        this.error = String(error)
+        return false
+      }
+    },
+
+    /** 启动指定实例的宿主进程；协作编排需要按节点拉起任意实例，因此与“启动当前实例”共用同一后端入口 */
+    async launchInstance(id: string, minimize = false, startMinimized = false, port?: number): Promise<boolean> {
+      if (updater.updating)
+        return false
       const target = this.registry.instances.find(item => item.id === id)
       if (!target)
-        return
+        return false
       this.error = ''
+      this.launchFailure = null
       this.busyInstanceId = id
       try {
         await invoke<number>('launch_instance_window', { id, minimized: startMinimized, port })
         this.runningInstanceIds = [...new Set([...this.runningInstanceIds, id])]
-        if (minimize)
-          await getCurrentWindow().minimize()
+        if (minimize) {
+          // Window chrome failures must not turn a healthy instance into a startup failure.
+          await getCurrentWindow().minimize().catch(() => {})
+        }
+        return true
       }
       catch (error) {
         const message = String(error)
+        const failure = parseLaunchFailure(error)
+        if (failure) {
+          this.launchFailure = failure
+          await this.refreshRunning()
+          return false
+        }
         if (message.includes('INSTANCE_HOME_RUNNING')) {
           const runningName = message.split(':').slice(2).join(':')
           toast(i18next.t('launcher.same_home_running', { name: runningName }), {
@@ -177,14 +234,21 @@ export const launcher = defineStore({
             variant: 'warning',
           })
           await this.refreshRunning()
-          return
+          return false
         }
         this.error = message
-        throw error
+        this.launchFailure = { instanceId: id, stage: 'launcher', message, plugins: [], log: '' }
+        await this.refreshRunning()
+        return false
       }
       finally {
-        this.busyInstanceId = null
+        if (this.busyInstanceId === id)
+          this.busyInstanceId = null
       }
+    },
+
+    clearLaunchFailure() {
+      this.launchFailure = null
     },
 
     async launch() {

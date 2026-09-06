@@ -98,7 +98,7 @@ fn read_plugin_meta(dir: &Path) -> Option<PluginPackageJson> {
 ///
 /// 只列出 profile package.json `dependencies` 中的直接依赖——node_modules 里
 /// 还有大量传递依赖（clsx/zod 等），它们不是用户安装的 dsh 插件，不应展示。
-fn parse_plugins(profile: &Path) -> Vec<DshPlugin> {
+pub(crate) fn list_profile(profile: &Path) -> Vec<DshPlugin> {
     let manifest_content = match std::fs::read_to_string(profile.join("package.json")) {
         Ok(content) => content,
         Err(_) => return Vec::new(),
@@ -155,7 +155,7 @@ fn parse_plugins(profile: &Path) -> Vec<DshPlugin> {
 
 /// 已安装插件列表（含解析后的元信息），前端首次加载/手动刷新用
 pub fn list(app_handle: &AppHandle) -> Vec<DshPlugin> {
-    parse_plugins(&profile_dir(app_handle))
+    list_profile(&profile_dir(app_handle))
 }
 
 /// 修改插件是否在 Profile 启动时加载。
@@ -346,7 +346,7 @@ mod tests {
                 ),
             ],
         );
-        let plugins = parse_plugins(&dir);
+        let plugins = list_profile(&dir);
         assert_eq!(plugins.len(), 2);
 
         let market = plugins.iter().find(|p| p.id == "dshmarket").unwrap();
@@ -373,7 +373,7 @@ mod tests {
                 ("dshmarket", r#"{"name":"dshmarket","dsh":{"bundle":{}}}"#),
             ],
         );
-        let plugins = parse_plugins(&dir);
+        let plugins = list_profile(&dir);
         // bundled（dshmarket）在前
         assert_eq!(plugins[0].id, "dshmarket");
         // 无版本/描述时保持为空
@@ -390,7 +390,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("dsh-watch-empty-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        assert!(parse_plugins(&dir).is_empty());
+        assert!(list_profile(&dir).is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

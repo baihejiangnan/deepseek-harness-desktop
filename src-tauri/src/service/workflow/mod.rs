@@ -17,6 +17,7 @@ use std::process::{Command, Stdio};
 #[cfg(windows)]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Manager};
 
 /// 启动守卫：并发调用 `launch` 时只允许一个真正拉起 dsh 进程
@@ -27,6 +28,9 @@ static OWNED_PROCESS_ID: AtomicU32 = AtomicU32::new(0);
 static RUNTIME_PORT: AtomicU32 = AtomicU32::new(0);
 /// 实例宿主被启动器指定使用固定端口（协作编排先分配端口再启动）。
 static REQUESTED_PORT: AtomicU32 = AtomicU32::new(0);
+/// DSH 启动时输出的本次 Web 入口。新版本会在 query 中携带临时认证 token，
+/// 因此只保存在实例宿主进程内存中，不写入配置或日志。
+static RUNTIME_WEB_URL: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 /// Windows 进程句柄用于确认 PID 仍指向原进程，消除 PID 复用误杀窗口。
 #[cfg(windows)]
 static OWNED_PROCESS_HANDLE: AtomicUsize = AtomicUsize::new(0);
@@ -399,13 +403,8 @@ pub fn sweep_orphan_harness(app_handle: &tauri::AppHandle) {
     if has_owned_process() {
         return;
     }
-    // 先按命令行路径清扫所有从本应用 dsh 安装目录启动的孤儿 Harness 实例：
-    // 标记文件只记录最近一次会话的 PID，应用多次崩溃/强杀会遗留更早的孤儿
-    // （端口一路漂移 3081/3082/…），它们持续占用 dependencies/dsh 目录的文件
-    // 句柄，导致更新切换目录失败（INSTALL_BACKUP_FAILED, os error 32）。
-    // 路径精确匹配不会误杀用户其它 node 程序；标记中的进程若在其中会被一并
-    // 结束，随后的 PID/端口双重确认自然落空，仅清理陈旧标记。
-    terminate_stale_harness_processes(app_handle);
+    // 所有实例共享同一运行时路径，路径相同不意味着进程是孤儿。
+    // 启动期间只能核验此 Home 的 PID 标记，禁止全局清扫其他实例。
     let pid_file = harness_pid_path(app_handle);
     let Ok(text) = fs::read_to_string(&pid_file) else {
         return;
@@ -537,6 +536,60 @@ pub fn runtime_port() -> Option<u16> {
         .filter(|port| *port != 0)
 }
 
+fn runtime_web_url_slot() -> &'static Mutex<Option<String>> {
+    RUNTIME_WEB_URL.get_or_init(|| Mutex::new(None))
+}
+
+pub fn runtime_web_url() -> Option<String> {
+    runtime_web_url_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+}
+
+pub(crate) fn capture_web_url(line: &str) {
+    let Some(candidate) = line
+        .split_whitespace()
+        .find(|part| part.starts_with("http://") || part.starts_with("https://"))
+    else {
+        return;
+    };
+    let Ok(url) = reqwest::Url::parse(candidate) else {
+        return;
+    };
+    let Some(port) = runtime_port() else {
+        return;
+    };
+    let loopback = matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1"));
+    let has_token = url
+        .query_pairs()
+        .any(|(key, value)| key == "token" && !value.is_empty());
+    if url.scheme() == "http" && loopback && url.port_or_known_default() == Some(port) && has_token
+    {
+        *runtime_web_url_slot()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(url.into());
+    }
+}
+
+pub(crate) fn redact_web_url(line: &str) -> String {
+    let Some(candidate) = line
+        .split_whitespace()
+        .find(|part| part.starts_with("http://") || part.starts_with("https://"))
+    else {
+        return line.to_string();
+    };
+    let Ok(mut url) = reqwest::Url::parse(candidate) else {
+        return line.to_string();
+    };
+    let has_token = url.query_pairs().any(|(key, _)| key == "token");
+    if !has_token {
+        return line.to_string();
+    }
+    url.set_query(Some("token=[REDACTED]"));
+    line.replacen(candidate, url.as_str(), 1)
+}
+
 /// 检测并启动 Harness 服务
 pub async fn start(app_handle: tauri::AppHandle) -> Result<(), String> {
     let setting = config::get_store_dat_setting(&app_handle);
@@ -638,6 +691,9 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
         None => find_available_port(setting.port)?,
     };
     RUNTIME_PORT.store(available_port as u32, Ordering::SeqCst);
+    *runtime_web_url_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = None;
     log::info!(
         "Instance {} allocated runtime port {}",
         instance.id,
@@ -1044,21 +1100,97 @@ pub async fn proxy_health_check(port: u16) -> Result<String, String> {
 
 /// 等待 DSH Web 服务可访问（HTTP / 返回 200）。实例宿主窗口必须在服务真正
 /// 监听后再加载地址，否则 WebView 会先展示“拒绝连接”且不会自动重试。
-/// 超时后返回 false 但仍由调用方继续开窗，保留错误页以便诊断。
+/// 失败时返回 false，调用方不得创建指向失效服务的窗口。
 pub async fn wait_until_web_ready(port: u16, timeout: std::time::Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;
+    let Ok(client) = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+    else {
+        return false;
+    };
     while std::time::Instant::now() < deadline {
-        if utils::is_dsh_running(port).await {
-            return true;
+        // 启动中的 Harness 若已退出，应立即让实例宿主失败退出；继续等满超时并
+        // 创建 WebView 只会留下一个误导用户的 ERR_CONNECTION_REFUSED 窗口。
+        if !has_owned_process() {
+            return false;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        if let Some(url) = runtime_web_url() {
+            if authenticated_web_ready(&client, &url).await {
+                return true;
+            }
+        } else {
+            let url = crate::config::get_dsh_service_url(port);
+            if let Ok(response) = client.get(url).send().await {
+                if response.status().is_success() {
+                    return true;
+                }
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     false
+}
+
+/// 新版 DSH 用启动 URL 换取 Cookie 后跳回首页。健康检查只将 Cookie
+/// 发回同一来源的根路径，避免默认跳转丢失 Cookie 后反复得到 401。
+async fn authenticated_web_ready(client: &reqwest::Client, url: &str) -> bool {
+    let Ok(response) = client.get(url).send().await else { return false; };
+    if response.status().is_success() {
+        return true;
+    }
+    if response.status() != reqwest::StatusCode::SEE_OTHER
+        || response.headers().get(reqwest::header::LOCATION).and_then(|v| v.to_str().ok()) != Some("/")
+    {
+        return false;
+    }
+    let cookies = response.headers().get_all(reqwest::header::SET_COOKIE)
+        .iter().filter_map(|value| value.to_str().ok())
+        .filter_map(|value| value.split(';').next())
+        .collect::<Vec<_>>().join("; ");
+    if cookies.is_empty() { return false; }
+    let Ok(mut root) = reqwest::Url::parse(url) else { return false; };
+    root.set_path("/");
+    root.set_query(None);
+    root.set_fragment(None);
+    client.get(root).header(reqwest::header::COOKIE, cookies).send().await
+        .is_ok_and(|response| response.status().is_success())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn readiness_exchanges_launch_token_for_cookie() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for step in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+                let mut buffer = [0; 4096];
+                let count = stream.read(&mut buffer).unwrap();
+                let request = String::from_utf8_lossy(&buffer[..count]).to_lowercase();
+                if step == 0 {
+                    assert!(request.starts_with("get /?token=test "));
+                    stream.write_all(b"HTTP/1.1 303 See Other\r\nLocation: /\r\nSet-Cookie: session=valid; HttpOnly\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                } else {
+                    assert!(request.starts_with("get / "));
+                    assert!(request.contains("cookie: session=valid"));
+                    stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                }
+            }
+        });
+        let client = reqwest::Client::builder().no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(3)).build().unwrap();
+        assert!(authenticated_web_ready(&client, &format!("http://{addr}/?token=test")).await);
+        server.join().unwrap();
+    }
     use std::net::TcpListener;
 
     #[test]
@@ -1094,5 +1226,24 @@ mod tests {
         assert!(!version_supports_no_open("0.1.0-rc"));
         assert!(!version_supports_no_open("0.1.0-rc.a"));
         assert!(!version_supports_no_open("latest"));
+    }
+
+    #[test]
+    fn captures_authenticated_loopback_web_url_and_redacts_log() {
+        RUNTIME_PORT.store(3081, Ordering::SeqCst);
+        *runtime_web_url_slot()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
+        let line = "dsh web: http://127.0.0.1:3081/?token=secret-value";
+
+        capture_web_url(line);
+
+        assert_eq!(
+            runtime_web_url().as_deref(),
+            Some("http://127.0.0.1:3081/?token=secret-value")
+        );
+        let redacted = redact_web_url(line);
+        assert!(!redacted.contains("secret-value"));
+        assert!(redacted.contains("REDACTED"));
     }
 }

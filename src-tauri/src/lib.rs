@@ -26,10 +26,10 @@ pub fn run() {
             // 残留并把原生模块 DLL（如 sharp 的 libvips-42.dll）锁在内存，
             // 下次启动重新解压时会失败（Windows os error 32）
             tauri::RunEvent::Exit => {
-                let setting = config::get_store_dat_setting(app_handle);
-                if setting.installed {
-                    service::workflow::stop_on_exit(app_handle.clone(), setting.port);
-                }
+                bridge::cmd::stop_instance_hosts_on_exit();
+                // 外部 npm/pnpm 运行时同样由实例宿主启动并持有，不能用旧版
+                // `installed` 标志决定是否回收，否则关闭窗口会留下服务和端口。
+                service::workflow::stop_on_exit(app_handle.clone(), 0);
             }
             _ => {}
         });

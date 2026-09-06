@@ -2,5 +2,7 @@
 export interface DshUpdateInfo {
   tag: string
   commit: string | null
-  source: 'launcher' | 'npm'
+  source: 'launcher' | 'npm' | 'upstream'
+  installable: boolean
+  releaseUrl: string | null
 }

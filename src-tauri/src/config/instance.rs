@@ -28,6 +28,8 @@ impl Default for DshVersionRef {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DshInstance {
+    #[serde(default)]
+    pub repair_assistant: bool,
     pub id: String,
     pub name: String,
     pub dsh_home: PathBuf,
@@ -50,6 +52,8 @@ pub struct InstanceRegistry {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateInstanceInput {
+    #[serde(default)]
+    pub repair_assistant: bool,
     pub name: String,
     pub dsh_home: PathBuf,
     pub profile: String,
@@ -60,6 +64,8 @@ pub struct CreateInstanceInput {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateInstanceInput {
+    #[serde(default)]
+    pub repair_assistant: Option<bool>,
     pub id: String,
     pub name: String,
     pub dsh_home: PathBuf,
@@ -155,6 +161,20 @@ pub(crate) fn normalize_home_for_export(path: &Path) -> Result<PathBuf, String> 
     normalize_home(path)
 }
 
+fn validate_repair_home(registry: &InstanceRegistry, home: &Path, repair: bool, exclude: Option<&str>) -> Result<(), String> {
+    if registry.instances.iter().any(|instance| {
+        exclude != Some(instance.id.as_str()) && (repair || instance.repair_assistant) && {
+            #[cfg(windows)]
+            { instance.dsh_home.to_string_lossy().eq_ignore_ascii_case(&home.to_string_lossy()) }
+            #[cfg(not(windows))]
+            { instance.dsh_home == home }
+        }
+    }) {
+        return Err("REPAIR_HOME_SHARED: repair assistant requires an independent DSH Home".into());
+    }
+    Ok(())
+}
+
 pub(crate) fn ensure_profile(home: &Path, profile: &str) -> Result<(), String> {
     let directory = home.join("profiles").join(profile);
     fs::create_dir_all(&directory).map_err(|error| format!("INSTANCE_PROFILE_CREATE: {error}"))?;
@@ -207,12 +227,15 @@ pub fn create(app: &AppHandle, input: CreateInstanceInput) -> Result<DshInstance
     }
     validate_profile(&input.profile)?;
     let home = normalize_home(&input.dsh_home)?;
+    let mut registry = read_registry(app)?;
+    validate_repair_home(&registry, &home, input.repair_assistant, None)?;
     ensure_profile(&home, &input.profile)?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| format!("INSTANCE_CLOCK: {error}"))?
         .as_millis();
     let instance = DshInstance {
+        repair_assistant: input.repair_assistant,
         id: format!("instance-{now}-{}", std::process::id()),
         name: name.to_string(),
         dsh_home: home,
@@ -221,7 +244,6 @@ pub fn create(app: &AppHandle, input: CreateInstanceInput) -> Result<DshInstance
         favorite: false,
         created_at: now as u64,
     };
-    let mut registry = read_registry(app)?;
     registry.instances.push(instance.clone());
     registry.active_instance_id = Some(instance.id.clone());
     write_registry(app, &registry)?;
@@ -236,15 +258,19 @@ pub fn update(app: &AppHandle, input: UpdateInstanceInput) -> Result<DshInstance
     }
     validate_profile(&input.profile)?;
     let home = normalize_home(&input.dsh_home)?;
-    ensure_profile(&home, &input.profile)?;
-
     let mut registry = read_registry(app)?;
+    let current = registry.instances.iter().find(|instance| instance.id == input.id)
+        .ok_or_else(|| format!("INSTANCE_NOT_FOUND: {}", input.id))?;
+    let repair = input.repair_assistant.unwrap_or(current.repair_assistant);
+    validate_repair_home(&registry, &home, repair, Some(&input.id))?;
+    ensure_profile(&home, &input.profile)?;
     let instance = registry
         .instances
         .iter_mut()
         .find(|instance| instance.id == input.id)
         .ok_or_else(|| format!("INSTANCE_NOT_FOUND: {}", input.id))?;
     instance.name = name.to_string();
+    instance.repair_assistant = repair;
     instance.dsh_home = home;
     instance.profile = input.profile;
     let updated = instance.clone();
@@ -298,6 +324,23 @@ pub fn remove(app: &AppHandle, id: &str) -> Result<InstanceRegistry, String> {
         .as_deref()
         .and_then(|active_id| registry.instances.iter().find(|item| item.id == active_id))
         .cloned();
+    set_active(active);
+    Ok(registry)
+}
+
+/// Remove only the registry entry. The DSH Home and all files remain intact.
+pub fn remove_registry_entry(app: &AppHandle, id: &str) -> Result<InstanceRegistry, String> {
+    let mut registry = read_registry(app)?;
+    if !registry.instances.iter().any(|instance| instance.id == id) {
+        return Err(format!("INSTANCE_NOT_FOUND: {id}"));
+    }
+    registry.instances.retain(|instance| instance.id != id);
+    if registry.active_instance_id.as_deref() == Some(id) {
+        registry.active_instance_id = registry.instances.first().map(|instance| instance.id.clone());
+    }
+    write_registry(app, &registry)?;
+    let active = registry.active_instance_id.as_deref()
+        .and_then(|active_id| registry.instances.iter().find(|item| item.id == active_id)).cloned();
     set_active(active);
     Ok(registry)
 }
@@ -423,6 +466,35 @@ pub fn set_active(instance: Option<DshInstance>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repair_home_isolation_is_symmetric_and_allows_self_update() {
+        let home = std::env::temp_dir().join("dsh-repair-isolation-test");
+        let mut registry = InstanceRegistry::default();
+        registry.instances.push(DshInstance {
+            id: "existing".into(), name: "Existing".into(), dsh_home: home.clone(),
+            profile: "tauri".into(), version: DshVersionRef::default(),
+            favorite: false, created_at: 0, repair_assistant: false,
+        });
+        assert!(validate_repair_home(&registry, &home, false, None).is_ok());
+        assert!(validate_repair_home(&registry, &home, true, None).is_err());
+        assert!(validate_repair_home(&registry, &home, true, Some("existing")).is_ok());
+        registry.instances[0].repair_assistant = true;
+        assert!(validate_repair_home(&registry, &home, false, None).is_err());
+        assert!(validate_repair_home(&registry, &home.join("independent"), true, None).is_ok());
+    }
+
+    #[test]
+    fn legacy_instance_inputs_preserve_repair_marker_on_update() {
+        let input: UpdateInstanceInput = serde_json::from_value(serde_json::json!({
+            "id": "legacy", "name": "Legacy", "dshHome": "test-home", "profile": "tauri"
+        })).unwrap();
+        assert_eq!(input.repair_assistant, None);
+        let input: CreateInstanceInput = serde_json::from_value(serde_json::json!({
+            "name": "Legacy", "dshHome": "test-home", "profile": "tauri"
+        })).unwrap();
+        assert!(!input.repair_assistant);
+    }
 
     #[test]
     fn profile_validation_rejects_paths() {

@@ -4,6 +4,7 @@ export interface DshVersionRef {
 }
 
 export interface DshInstance {
+  repairAssistant?: boolean
   id: string
   name: string
   dshHome: string

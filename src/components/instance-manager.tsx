@@ -19,7 +19,7 @@ interface InstanceManagerProps {
 
 export default function InstanceManager({ onGoDownloads }: InstanceManagerProps) {
   const { t } = useTranslation()
-  const { registry, error, sharing, runningInstanceIds, runningInstancePorts, busyInstanceId } = useStore(store.launcher)
+  const { registry, error, sharing, runningInstanceIds, runningInstancePorts, busyInstanceId, launchFailure } = useStore(store.launcher)
   const { updating: dshUpdating } = useStore(updater)
   const [creating, setCreating] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -29,6 +29,11 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
   const [removing, setRemoving] = useState(false)
   const [confirmBeforeRemoval, setConfirmBeforeRemoval] = useState(true)
   const [dshVersion, setDshVersion] = useState<string | null>(null)
+  const [failureAction, setFailureAction] = useState<'disable' | 'remove' | null>(null)
+  const [failureActionError, setFailureActionError] = useState('')
+  const [repairCopyStatus, setRepairCopyStatus] = useState('')
+  const [failureHandledPlugins, setFailureHandledPlugins] = useState<string[]>([])
+  const [failureRemovedPlugins, setFailureRemovedPlugins] = useState<string[]>([])
   const active = registry.instances.find(item => item.id === registry.activeInstanceId) ?? null
   const activePort = active ? runningInstancePorts[active.id] : undefined
   const activeIsRunning = active != null && runningInstanceIds.includes(active.id)
@@ -46,6 +51,24 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
     isOpen: removeOpen,
     onOpenChange: setRemoveOpen,
   })
+  const failureState = useOverlayState({
+    isOpen: launchFailure != null,
+    onOpenChange(open) {
+      if (!open && failureAction == null) {
+        setFailureActionError('')
+        setFailureHandledPlugins([])
+        setFailureRemovedPlugins([])
+        store.launcher.clearLaunchFailure()
+      }
+    },
+  })
+  const [previousLaunchFailure, setPreviousLaunchFailure] = useState(launchFailure)
+  if (previousLaunchFailure !== launchFailure) {
+    setPreviousLaunchFailure(launchFailure)
+    setFailureHandledPlugins([])
+    setFailureRemovedPlugins([])
+    setFailureActionError('')
+  }
   useEffect(() => {
     void Promise.all([
       invoke<{ confirm_before_instance_removal?: boolean }>('get_app_config'),
@@ -62,6 +85,19 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
     let removed = false
     await runViewTransition(async () => {
       removed = await store.launcher.remove(active.id)
+    })
+    setRemoving(false)
+    if (removed)
+      setRemoveOpen(false)
+  }
+
+  async function removeInstanceRegistryOnly() {
+    if (!active)
+      return
+    setRemoving(true)
+    let removed = false
+    await runViewTransition(async () => {
+      removed = await store.launcher.removeRegistryOnly(active.id)
     })
     setRemoving(false)
     if (removed)
@@ -94,6 +130,88 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
   function closeSettings() {
     setSettingsOpen(false)
     setInstanceSidebarOpen(true)
+  }
+
+  async function handleFailedPlugins(action: 'disable' | 'remove') {
+    if (!launchFailure || launchFailure.plugins.length === 0 || failureAction != null)
+      return
+    setFailureAction(action)
+    setFailureActionError('')
+    try {
+      const handled: string[] = []
+      const errors: string[] = []
+      for (const pluginId of launchFailure.plugins) {
+        if ((action === 'disable' ? failureHandledPlugins : failureRemovedPlugins).includes(pluginId))
+          continue
+        if (action === 'disable') {
+          try {
+            await invoke('set_plugin_enabled_for_instance', {
+              instanceId: launchFailure.instanceId,
+              pluginId,
+              enabled: false,
+            })
+            handled.push(pluginId)
+            setFailureHandledPlugins(current => [...new Set([...current, pluginId])])
+          }
+          catch (error) {
+            errors.push(`${pluginId}: ${String(error)}`)
+          }
+        }
+        else {
+          try {
+            await invoke('remove_plugin_for_instance', {
+              instanceId: launchFailure.instanceId,
+              pluginId,
+            })
+            handled.push(pluginId)
+            setFailureHandledPlugins(current => [...new Set([...current, pluginId])])
+            setFailureRemovedPlugins(current => [...new Set([...current, pluginId])])
+          }
+          catch (error) {
+            errors.push(`${pluginId}: ${String(error)}`)
+          }
+        }
+      }
+      setFailureHandledPlugins(current => [...new Set([...current, ...handled])])
+      setFailureActionError(errors.join('\n'))
+    }
+    finally {
+      setFailureAction(null)
+    }
+  }
+
+  async function copyFailureLog() {
+    if (!launchFailure)
+      return
+    try {
+      const log = launchFailure.log || await invoke<string>('read_instance_startup_log', { instanceId: launchFailure.instanceId })
+      await navigator.clipboard.writeText(log || launchFailure.message)
+      setFailureActionError('')
+    }
+    catch (error) {
+      setFailureActionError(String(error))
+    }
+  }
+
+  async function copyRepairPrompt() {
+    try {
+      await navigator.clipboard.writeText(t('repair.prompt'))
+      setRepairCopyStatus(t('repair.copied'))
+    }
+    catch {
+      setRepairCopyStatus(t('repair.copy_failed'))
+    }
+  }
+
+  async function retryFailedInstance() {
+    if (!launchFailure || failureAction != null)
+      return
+    const instanceId = launchFailure.instanceId
+    setFailureActionError('')
+    setFailureHandledPlugins([])
+    setFailureRemovedPlugins([])
+    store.launcher.clearLaunchFailure()
+    await store.launcher.launchInstance(instanceId, true)
   }
 
   async function selectInstance(id: string) {
@@ -215,6 +333,16 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
                     </section>
                   )}
                   <SharingNotice level={level} />
+                  {active?.repairAssistant && (
+                    <section className="mt-4 rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)] p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <h2 className="m-0 text-sm font-semibold">{t('repair.title')}</h2>
+                        <Button className="rounded-md" variant="outline" onPress={() => { void copyRepairPrompt() }}>{t('repair.copy')}</Button>
+                      </div>
+                      <p className="mb-0 text-xs leading-6 text-[var(--launcher-muted)]">{t('repair.instructions')}</p>
+                      <p role="status" className="mb-0 text-xs text-[var(--launcher-muted)]">{repairCopyStatus}</p>
+                    </section>
+                  )}
                   <OverviewTable
                     rows={[
                       { label: t('launcher.version'), value: versionLabel, accent: true },
@@ -259,7 +387,7 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
           )}
       <Modal state={removeState}>
         <Modal.Backdrop isDismissable={!removing}>
-          <Modal.Container size="sm">
+          <Modal.Container size="md">
             <Modal.Dialog>
               <Modal.Header>
                 <Modal.Heading>{t('launcher.remove_instance_title')}</Modal.Heading>
@@ -267,6 +395,10 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
               </Modal.Header>
               <Modal.Body className="space-y-3">
                 <p className="m-0 text-sm text-[var(--launcher-muted)]">{t('launcher.remove_instance_export_prompt')}</p>
+                <div className="rounded-md border border-[var(--launcher-brand)]/25 bg-[var(--launcher-selected)]/60 p-3 text-xs leading-5 text-[var(--launcher-ink)]">
+                  <div className="font-semibold">{t('launcher.remove_instance_registry_only_title')}</div>
+                  <div className="mt-1 text-[var(--launcher-muted)]">{t('launcher.remove_instance_registry_only_description')}</div>
+                </div>
                 <code className="block break-all rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-canvas)] p-3 text-xs text-[var(--launcher-ink)]">{active?.dshHome}</code>
                 <If cond={sameHome > 1}>
                   <p className="m-0 text-xs text-danger">{t('launcher.remove_instance_shared')}</p>
@@ -284,9 +416,60 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
                 <Button className="launcher-danger-action rounded-md text-danger" variant="ghost" isDisabled={removing || runningAffected.length > 0} onPress={removeInstance}>
                   {removing ? t('launcher.removing_instance') : t('launcher.remove_without_export')}
                 </Button>
+                <Button className="rounded-md" variant="outline" isDisabled={removing || runningAffected.length > 0} onPress={removeInstanceRegistryOnly}>
+                  {removing ? t('launcher.removing_instance') : t('launcher.remove_registry_only')}
+                </Button>
                 <Button className="rounded-md bg-[var(--launcher-brand)] text-white" isDisabled={removing} onPress={goToExport}>
                   {t('launcher.go_to_export')}
                 </Button>
+              </Modal.Footer>
+            </Modal.Dialog>
+          </Modal.Container>
+        </Modal.Backdrop>
+      </Modal>
+      <Modal state={failureState}>
+        <Modal.Backdrop isDismissable={failureAction == null}>
+          <Modal.Container size="md">
+            <Modal.Dialog>
+              <Modal.Header>
+                <Modal.Heading>{t('launcher.launch_failure_title')}</Modal.Heading>
+                <Modal.CloseTrigger isDisabled={failureAction != null} />
+              </Modal.Header>
+              <Modal.Body className="space-y-4">
+                <p className="m-0 text-sm text-[var(--launcher-muted)]">{t('launcher.launch_failure_description')}</p>
+                <div className="max-h-48 overflow-y-auto break-words rounded-md border border-danger/25 bg-danger/5 p-3 text-sm text-[var(--launcher-ink)]">
+                  {launchFailure?.message}
+                </div>
+                {launchFailure && launchFailure.plugins.length > 0
+                  ? (
+                      <div className="min-w-0">
+                        <div className="mb-2 text-xs font-semibold text-[var(--launcher-muted)]">{t('launcher.launch_failure_plugins')}</div>
+                        <div className="flex flex-wrap gap-2">
+                          {launchFailure.plugins.map(plugin => (
+                            <code key={plugin} className="rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-canvas)] px-2.5 py-1.5 text-xs text-[var(--launcher-ink)]">
+                              {plugin}
+                              {failureHandledPlugins.includes(plugin) ? ` · ${t('launcher.launch_failure_handled')}` : ''}
+                            </code>
+                          ))}
+                        </div>
+                        <p className="my-3 text-xs text-[var(--launcher-muted)]">{t('launcher.launch_failure_repair_hint')}</p>
+                        <div className="flex flex-wrap gap-2">
+                          <Button className="rounded-md border-[var(--launcher-border)] bg-[var(--launcher-surface)] text-[var(--launcher-ink)]" variant="outline" isDisabled={failureAction != null || failureHandledPlugins.length === launchFailure.plugins.length} onPress={() => { void handleFailedPlugins('disable') }}>
+                            {failureAction === 'disable' ? t('launcher.processing') : t('launcher.launch_failure_disable')}
+                          </Button>
+                          <Button className="launcher-danger-action rounded-md text-danger" variant="ghost" isDisabled={failureAction != null || failureRemovedPlugins.length === launchFailure.plugins.length} onPress={() => { void handleFailedPlugins('remove') }}>
+                            {failureAction === 'remove' ? t('launcher.processing') : t('launcher.launch_failure_remove')}
+                          </Button>
+                        </div>
+                      </div>
+                    )
+                  : <p className="m-0 text-xs text-[var(--launcher-muted)]">{t('launcher.launch_failure_no_plugin')}</p>}
+                <If cond={failureHandledPlugins.length > 0}><p className="m-0 text-xs text-success">{t('launcher.launch_failure_handled_count', { count: failureHandledPlugins.length })}</p></If>
+                <If cond={failureActionError !== ''}><p className="m-0 whitespace-pre-wrap text-xs text-danger">{failureActionError}</p></If>
+              </Modal.Body>
+              <Modal.Footer className="flex-wrap gap-2">
+                <Button className="rounded-md" variant="tertiary" isDisabled={failureAction != null} onPress={() => { void copyFailureLog() }}>{t('launcher.launch_failure_copy_log')}</Button>
+                <Button className="rounded-md bg-[var(--launcher-brand)] text-white" isDisabled={failureAction != null} onPress={() => { void retryFailedInstance() }}>{t('launcher.launch_failure_retry')}</Button>
               </Modal.Footer>
             </Modal.Dialog>
           </Modal.Container>

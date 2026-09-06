@@ -123,13 +123,15 @@ export default function LauncherShell() {
   return (
     <div className={`launcher-theme launcher-theme-${appearance.theme} ${appearance.blur ? 'launcher-blur' : ''} flex h-screen w-screen flex-col bg-[var(--launcher-canvas)] text-[var(--launcher-ink)]`}>
       <header className="launcher-header relative flex h-[57px] flex-none items-center bg-[var(--launcher-brand)] px-4 text-white shadow-[0_1px_0_rgba(24,54,106,0.12)] select-none">
-        <div className="z-10 text-[19px] font-medium tracking-tight" data-tauri-drag-region>DSH Launcher</div>
-        <nav className="absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 items-center gap-2">
+        <div className="z-10 shrink-0 text-[19px] font-medium tracking-tight" data-tauri-drag-region>DSH Launcher</div>
+        <nav className="absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 items-center gap-2 max-xl:static max-xl:min-w-0 max-xl:flex-1 max-xl:translate-x-0 max-xl:translate-y-0 max-xl:justify-center max-lg:gap-1">
           {items.map((item) => {
             const Icon = item.icon
             return (
               <button
                 key={item.id}
+                aria-label={t(`launcher.nav.${item.id}`)}
+                title={t(`launcher.nav.${item.id}`)}
                 aria-current={section === item.id ? 'page' : undefined}
                 className={`flex h-[38px] items-center gap-2 rounded-[7px] px-4 text-[15px] transition-all duration-200 ease-out motion-reduce:transform-none motion-reduce:transition-none active:scale-[0.97] ${section === item.id ? 'scale-[1.02] bg-white text-[var(--launcher-brand-strong)] shadow-[0_4px_12px_rgba(28,60,120,0.2)]' : 'text-white hover:-translate-y-0.5 hover:bg-white/14 hover:shadow-[0_3px_9px_rgba(28,60,120,0.14)]'}`}
                 type="button"
@@ -140,12 +142,12 @@ export default function LauncherShell() {
                 }}
               >
                 <Icon />
-                {t(`launcher.nav.${item.id}`)}
+                <span className="max-lg:hidden">{t(`launcher.nav.${item.id}`)}</span>
               </button>
             )
           })}
         </nav>
-        <div className="flex-1 self-stretch" data-tauri-drag-region />
+        <div className="flex-1 self-stretch max-xl:hidden" data-tauri-drag-region />
         <button className="z-10 grid size-8 place-items-center rounded-[7px] text-base transition-colors hover:bg-white/10" type="button" aria-label={t('nav.minimize')} title={t('nav.minimize')} onClick={() => { void getCurrentWindow().minimize() }}>
           <Minus className="size-4" />
         </button>

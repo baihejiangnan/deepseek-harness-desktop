@@ -7,6 +7,7 @@ use std::time::Duration;
 /// 检查 Harness 是否真正在运行（探测指定端口，随配置端口联动）
 pub async fn is_dsh_running(port: u16) -> bool {
     let client = reqwest::Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(2))
         .build()
         .ok(); // 将 Result 转为 Option
@@ -19,10 +20,12 @@ pub async fn is_dsh_running(port: u16) -> bool {
 
     let url = format!("{}/", crate::config::get_dsh_service_url(port));
 
-    // 发送请求并判断是否就绪
+    // 接受成功响应与新版 DSH 的认证挑战，代理错误或服务端错误不代表就绪。
     let check_status = async {
-        let resp = client.get(&url).send().await.ok()?;
-        if resp.status() != reqwest::StatusCode::OK {
+        let response = client.get(&url).send().await.ok()?;
+        if !(response.status().is_success()
+            || response.status() == reqwest::StatusCode::UNAUTHORIZED)
+        {
             return None;
         }
         Some(true)
@@ -57,8 +60,10 @@ where
             for line in reader.lines() {
                 match line {
                     Ok(line) => {
-                        log::info!("[dsh::stdout]: {}", line);
-                        append_log(&log_path, &line);
+                        crate::service::workflow::capture_web_url(&line);
+                        let safe_line = crate::service::workflow::redact_web_url(&line);
+                        log::info!("[dsh::stdout]: {}", safe_line);
+                        append_log(&log_path, &safe_line);
                     }
                     Err(e) => {
                         log::error!("Failed to read dsh stdout: {}", e);
@@ -76,8 +81,10 @@ where
             for line in reader.lines() {
                 match line {
                     Ok(line) => {
-                        log::warn!("[dsh::stderr]: {}", line);
-                        append_log(&log_path, &line);
+                        crate::service::workflow::capture_web_url(&line);
+                        let safe_line = crate::service::workflow::redact_web_url(&line);
+                        log::warn!("[dsh::stderr]: {}", safe_line);
+                        append_log(&log_path, &safe_line);
                     }
                     Err(e) => {
                         log::error!("Failed to read dsh stderr: {}", e);

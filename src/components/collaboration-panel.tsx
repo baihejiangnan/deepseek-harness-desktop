@@ -968,7 +968,11 @@ export default function CollaborationPanel() {
     for (const node of currentNodes) {
       const minimized = node.id !== masterNode.id
       try {
-        await store.launcher.launchInstance(node.instanceId, false, minimized, portsById.get(node.instanceId))
+        if (!await store.launcher.launchInstance(node.instanceId, false, minimized, portsById.get(node.instanceId))) {
+          launchFailed = true
+          runningStatuses[node.id] = 'failed'
+          commitStatuses({ ...runningStatuses })
+        }
       }
       catch {
         launchFailed = true
@@ -1065,7 +1069,10 @@ export default function CollaborationPanel() {
       return
     }
     try {
-      await store.launcher.launchInstance(instance.id)
+      if (!store.launcher.runningInstanceIds.includes(instance.id) && !await store.launcher.launchInstance(instance.id)) {
+        failNode(nodeId)
+        return
+      }
       const started = await invoke<CollabTaskStart>('collab_start_task', {
         instanceId: instance.id,
         task: buildTaskPrompt(nodeId),

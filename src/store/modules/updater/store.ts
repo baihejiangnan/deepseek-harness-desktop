@@ -91,6 +91,13 @@ export const updater = defineStore({
       }
       if (!this.updateInfo)
         return
+      if (!this.updateInfo.installable) {
+        toast(i18next.t('update.awaiting_package'), {
+          placement: 'bottom end',
+          variant: 'warning',
+        })
+        return
+      }
 
       let running: string[]
       try {
@@ -165,6 +172,14 @@ export const updater = defineStore({
     showToast() {
       if (!this.updateInfo)
         return
+      if (!this.updateInfo.installable) {
+        toast(t('update.upstream_available', { tag: this.updateInfo.tag }), {
+          placement: 'bottom end',
+          description: t('update.awaiting_package'),
+          variant: 'default',
+        })
+        return
+      }
       toast(t('update.available', { tag: this.updateInfo.tag }), {
         actionProps: {
           children: t('update.now'),
