@@ -135,8 +135,8 @@ DSH 会把一切写进 `DSH_HOME`：
 
 ## 快速开始
 
-- **安装版**：从 [GitHub Releases](https://github.com/baihejiangnan/deepseek-harness-desktop/releases) 下载 `x64-setup.exe` 安装器，安装后从开始菜单或桌面快捷方式启动。
-- **免安装版（Windows x64）**：直接下载 [deepseek-harness-desktop.exe](https://raw.githubusercontent.com/baihejiangnan/deepseek-harness-desktop/master/release/windows/deepseek-harness-desktop.exe)，双击即可运行，无需安装。
+- **安装版**：下载 [Windows 安装版](https://github.com/baihejiangnan/deepseek-harness-desktop/releases/download/v0.0.6/DSH.Launcher_0.0.6_x64-setup.exe)，安装后从开始菜单或桌面快捷方式启动。
+- **免安装版（Windows x64）**：直接下载 [Windows 便携版](https://github.com/baihejiangnan/deepseek-harness-desktop/releases/download/v0.0.6/DSH-Launcher_0.0.6_windows_x64_portable.exe)，双击即可运行，无需安装。
 
 首次运行需要联网准备 Node.js Runtime 和 DSH Runtime。
 
@@ -150,7 +150,7 @@ pnpm tauri dev                 # 开发调试
 pnpm tauri build --bundles nsis   # 产出 Windows 安装包
 ```
 
-安装包输出到 `src-tauri/target/release/bundle/nsis/`。Windows 免安装版 exe（直接双击运行，无需安装）可直接下载：[deepseek-harness-desktop.exe](https://raw.githubusercontent.com/baihejiangnan/deepseek-harness-desktop/master/release/windows/deepseek-harness-desktop.exe)。开发细节见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
+安装包输出到 `src-tauri/target/release/bundle/nsis/`。Windows 免安装版 exe（直接双击运行，无需安装）可从 [v0.0.6 Release](https://github.com/baihejiangnan/deepseek-harness-desktop/releases/tag/v0.0.6) 下载。开发细节见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
 
 ## 隐私边界
 
