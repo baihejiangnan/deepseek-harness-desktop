@@ -47,7 +47,14 @@ DSH version + DSH_HOME + Profile + runtime launch state
 
 Profile 名称只在对应的 `DSH_HOME` 内有意义。因此，不同 Home 中同名 Profile 不发生关联。
 
-创建实例只会初始化缺失的 Profile 文件，不覆盖已有文件。移除实例只删除启动器注册记录，不删除用户的 DSH_HOME 或 Profile 数据。
+创建实例只会初始化缺失的 Profile 文件（`config/instance.rs::ensure_profile`），不覆盖已有文件。
+
+移除实例有两种语义：
+
+- `remove_instance` 是 **Home 级破坏性操作**：删除该实例对应的整个 `DSH_HOME`（`config/instance.rs::remove_home_directory`，拒绝文件系统根目录并报 `INSTANCE_HOME_UNSAFE`），同时移除所有共享该 Home 的实例记录。默认在删除前询问是否前往导出页创建完整 Home 备份，该询问可在个性化设置中关闭。
+- `remove_instance_registry_only` 只删除注册表记录，`DSH_HOME` 与 Profile 数据完整保留。
+
+只要有任一受影响实例正在运行，两者都拒绝执行并报 `INSTANCE_HOME_RUNNING:`。修复助手实例要求独立 Home，与其他实例共享同一 Home 时报 `REPAIR_HOME_SHARED`。
 
 ## 首次使用流程
 
@@ -72,11 +79,11 @@ Profile 名称只在对应的 `DSH_HOME` 内有意义。因此，不同 Home 中
 
 ## V2 实施范围
 
-本版本实现实例创建、选择、移除记录、共享关系提示、自动端口分配、独立窗口/任务栏标识、并行实例、启动器最小化、实例独立关闭/崩溃回收，以及启动器更新与 DSH 运行时更新的边界分离。资源、启动器设置与更多页面保留现有入口；多 DSH 版本下载、实例导入导出作为后续扩展。
+本版本实现实例创建、选择、移除（Home 级删除与仅删注册记录两种）、共享关系提示、自动端口分配、独立窗口/任务栏标识、并行实例、启动器最小化、实例独立关闭/崩溃回收，以及启动器更新与 DSH 运行时更新的边界分离。资源、启动器设置与更多页面保留现有入口；多 DSH 版本下载、实例导入导出作为后续扩展。
 
 ## 数据边界
 
-启动器注册表只保存实例元数据，不保存 API Key、会话、Agent 预设或插件内容。实例进程通过 `DSH_HOME` 和 Profile 环境变量直接使用用户目录；桌面封装端不复制、迁移或修改 DSH 原生数据，也不参与 DSH 自身的更新逻辑。
+启动器注册表只保存实例元数据，不保存 API Key、会话、Agent 预设或插件内容。实例进程通过 `DSH_HOME` 和 Profile 环境变量直接使用用户目录；桌面封装端不复制、迁移或修改 DSH 原生数据，也不参与 DSH 自身的更新逻辑。唯一对用户数据的破坏性操作是用户显式执行的移除实例流程（删除该实例的 `DSH_HOME`）；更改实例的 Home 路径不会迁移或删除旧路径的数据。
 
 ## 更新策略
 

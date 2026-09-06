@@ -1,12 +1,12 @@
 # Development
 
-DeepSeek Harness Desktop is a **Tauri 2 + React 18** app: the UI lives in `src/`, the Rust backend in `src-tauri/`.
+DeepSeek Harness Desktop is a **Tauri 2 + React 19** app: the UI lives in `src/`, the Rust backend in `src-tauri/`.
 
 ## Requirements
 
 | Tool | Version |
 | --- | --- |
-| Node.js | 20+ |
+| Node.js | 20.19+ or 22.12+ (Vite 7 engines) |
 | Rust | 1.77.2+ |
 | pnpm | 9+ |
 
@@ -35,4 +35,5 @@ cargo test
 
 ## Tips
 
-- Debug mode serves on port **3081**, release builds on **3080** — the two never clash, so you can run an installed copy and a dev build side by side.
+- The Harness service listens on **3080** in release builds and **3081** in debug (`src-tauri/src/config/constants.rs`), so an installed copy and `pnpm tauri dev` can run side by side without fighting over the port.
+- The frontend dev server is Vite on **1420** (`vite.config.ts`, `tauri.conf.json` → `devUrl`), with HMR on **1421** when `TAURI_DEV_HOST` is set.

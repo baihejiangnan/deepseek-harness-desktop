@@ -1,12 +1,12 @@
 # 开发
 
-DeepSeek Harness Desktop 是 **Tauri 2 + React 18** 应用：前端位于 `src/`，Rust 后端位于 `src-tauri/`。
+DeepSeek Harness Desktop 是 **Tauri 2 + React 19** 应用：前端位于 `src/`，Rust 后端位于 `src-tauri/`。
 
 ## 环境要求
 
 | 工具 | 版本 |
 | --- | --- |
-| Node.js | 20+ |
+| Node.js | 20.19+ 或 22.12+（Vite 7 engines 要求） |
 | Rust | 1.77.2+ |
 | pnpm | 9+ |
 
@@ -35,4 +35,5 @@ cargo test
 
 ## 小贴士
 
-- 调试模式使用 **3081** 端口，正式版使用 **3080** —— 两者互不冲突，可以同时运行已安装版本与开发构建。
+- Harness 服务端口：正式版 **3080**、调试版 **3081**（见 `src-tauri/src/config/constants.rs`），因此已安装版本与 `pnpm tauri dev` 可以同时运行而不争用端口。
+- 前端开发服务器是 Vite 的 **1420** 端口（`vite.config.ts`、`tauri.conf.json` 的 `devUrl`）；设置 `TAURI_DEV_HOST` 时 HMR 使用 **1421**。
