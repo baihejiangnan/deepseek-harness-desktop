@@ -203,22 +203,26 @@ jobs:
           args: ${{ matrix.args }}
 
       - name: Prepare Windows portable executable
+        id: portable
         if: steps.check.outputs.should_run == 'true' && matrix.id == 'windows'
         shell: pwsh
         run: |
           $version = if ('${{ github.event_name }}' -eq 'push') { '${{ github.ref_name }}'.TrimStart('v') } else { 'test-${{ github.run_number }}' }
           $portableDir = 'release/windows'
           New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
-          Copy-Item -LiteralPath 'src-tauri/target/release/dsh-launcher.exe' -Destination "$portableDir/DSH-Launcher_${version}_windows_x64_portable.exe" -Force
+          $portablePath = "$portableDir/DSH-Launcher_${version}_windows_x64_portable.exe"
+          Copy-Item -LiteralPath 'src-tauri/target/release/dsh-launcher.exe' -Destination $portablePath -Force -ErrorAction Stop
+          "path=$portablePath" >> $env:GITHUB_OUTPUT
 
       - name: Upload Windows portable executable to release
         if: steps.check.outputs.should_run == 'true' && matrix.id == 'windows'
         shell: pwsh
         run: |
           $tag = if ('${{ github.event_name }}' -eq 'push') { '${{ github.ref_name }}' } else { 'test-build-${{ github.run_number }}' }
-          $portable = Get-ChildItem -LiteralPath 'release/windows' -Filter '*_portable.exe' | Select-Object -First 1
-          if (-not $portable) { throw 'Portable executable was not generated' }
-          gh release upload $tag $portable.FullName --clobber
+          $portable = '${{ steps.portable.outputs.path }}'
+          if (-not (Test-Path -LiteralPath $portable -PathType Leaf)) { throw 'Portable executable was not generated' }
+          gh release upload $tag $portable --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Portable upload failed' }
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -233,7 +237,7 @@ jobs:
             src-tauri/target/release/bundle/msi/*.msi
             src-tauri/target/release/bundle/appimage/*.AppImage
             src-tauri/target/release/bundle/deb/*.deb
-            release/windows/*_portable.exe
+            ${{ steps.portable.outputs.path }}
           retention-days: 7
 
   publish-release:

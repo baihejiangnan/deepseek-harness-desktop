@@ -35,5 +35,5 @@ cargo test
 
 ## Tips
 
-- The Harness service listens on **3080** in release builds and **3081** in debug (`src-tauri/src/config/constants.rs`), so an installed copy and `pnpm tauri dev` can run side by side without fighting over the port.
+- The default starting port is **3080** for release builds and **3081** for debug. Startup probes for an available port; the instance runtime status shows the actual listening port.
 - The frontend dev server is Vite on **1420** (`vite.config.ts`, `tauri.conf.json` → `devUrl`), with HMR on **1421** when `TAURI_DEV_HOST` is set.

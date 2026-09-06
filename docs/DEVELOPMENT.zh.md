@@ -35,5 +35,5 @@ cargo test
 
 ## 小贴士
 
-- Harness 服务端口：正式版 **3080**、调试版 **3081**（见 `src-tauri/src/config/constants.rs`），因此已安装版本与 `pnpm tauri dev` 可以同时运行而不争用端口。
+- Harness 默认起始端口：正式版 **3080**、调试版 **3081**；启动时会探测可用端口，实际监听端口以实例运行状态为准。
 - 前端开发服务器是 Vite 的 **1420** 端口（`vite.config.ts`、`tauri.conf.json` 的 `devUrl`）；设置 `TAURI_DEV_HOST` 时 HMR 使用 **1421**。
