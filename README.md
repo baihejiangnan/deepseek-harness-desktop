@@ -138,7 +138,7 @@ DSH 会把一切写进 `DSH_HOME`：
 - **安装版**：下载 [Windows 安装版](https://github.com/baihejiangnan/deepseek-harness-desktop/releases/download/v0.0.7/DSH.Launcher_0.0.7_x64-setup.exe)，安装后从开始菜单或桌面快捷方式启动。
 - **免安装版（Windows x64）**：直接下载 [Windows 便携版](https://github.com/baihejiangnan/deepseek-harness-desktop/releases/download/v0.0.7/DSH-Launcher_0.0.7_windows_x64_portable.exe)，双击即可运行，无需安装。
 
-首次运行需要联网准备 Node.js Runtime 和 DSH Runtime。
+无需手动安装 Node.js 或 DSH。首次启动实例时，启动器会自动检测并联网下载缺少的运行环境；已有兼容环境会优先复用。
 
 > 当前主构建目标为 Windows x64；macOS / Linux 发行包需在对应平台自行构建。
 

@@ -76,7 +76,11 @@ pub fn extract_zip<'a, R: Runtime>(
         let progress_pct = ((i + 1) as f64 / total_files as f64) * 100.0;
         tracker.update(
             progress_pct,
-            format!("已解压 {:.1}%", progress_pct),
+            format!(
+                "{} {:.1}%",
+                crate::config::i18n::t("install.extracted"),
+                progress_pct
+            ),
             format!("Extract {}", relative_path),
         );
 
@@ -164,7 +168,11 @@ pub fn extract_tgz<'a, R: Runtime>(
         let estimated_pct = (file_count as f64 / (file_count + 1) as f64) * 100.0;
         tracker.update(
             -1.0,
-            format!("已解压 {:.1}%", estimated_pct),
+            format!(
+                "{} {:.1}%",
+                crate::config::i18n::t("install.extracted"),
+                estimated_pct
+            ),
             format!("Extract {}", relative_path),
         );
 

@@ -158,7 +158,8 @@ async fn download_attempt<'a, R: Runtime>(
         tracker.update(
             progress_pct,
             format!(
-                "已下载 {:.1} MB / {:.1} MB",
+                "{} {:.1} MB / {:.1} MB",
+                config::i18n::t("install.downloaded"),
                 received_total as f64 / 1_000_000.0,
                 total_size as f64 / 1_000_000.0
             ),
@@ -426,7 +427,7 @@ pub async fn ensure_extract<'a, R: Runtime>(
         })?;
         tracker.update(
             100.0,
-            format!("已写入: {}", "100%"),
+            format!("{} 100%", config::i18n::t("install.written")),
             format!("File written: {}", staging.display()),
         );
         commit_staged_install(&staging, &dest, &backup).await?;

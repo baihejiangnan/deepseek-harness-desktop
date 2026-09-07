@@ -19,7 +19,7 @@ interface InstanceManagerProps {
 
 export default function InstanceManager({ onGoDownloads }: InstanceManagerProps) {
   const { t } = useTranslation()
-  const { registry, error, sharing, runningInstanceIds, runningInstancePorts, busyInstanceId, launchFailure } = useStore(store.launcher)
+  const { registry, error, sharing, runningInstanceIds, runningInstancePorts, busyInstanceId, launchFailure, installProgress } = useStore(store.launcher)
   const { updating: dshUpdating } = useStore(updater)
   const [creating, setCreating] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -324,11 +324,37 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
                             <h2 className="m-0 text-sm font-semibold text-[var(--launcher-ink)]">{t('launcher.starting_instance')}</h2>
                             <span className="rounded-full bg-white/75 px-2 py-0.5 text-[11px] font-medium text-[var(--launcher-brand-strong)]">{active?.name}</span>
                           </div>
-                          <p className="m-0 mt-1 text-xs leading-5 text-[var(--launcher-muted)]">{t('launcher.starting_instance_port')}</p>
+                          {installProgress
+                            ? (
+                                <div className="mt-1 space-y-0.5">
+                                  <p className="m-0 truncate text-xs leading-5 font-medium">{installProgress.title}</p>
+                                  <If cond={installProgress.detail !== ''}>
+                                    <p className="m-0 truncate text-xs leading-5 text-[var(--launcher-muted)]">{installProgress.detail}</p>
+                                  </If>
+                                </div>
+                              )
+                            : <p className="m-0 mt-1 text-xs leading-5 text-[var(--launcher-muted)]">{t('launcher.starting_instance_port')}</p>}
                         </div>
                       </div>
-                      <div className="mt-4 h-1 overflow-hidden rounded-full bg-white/70" role="progressbar" aria-label={t('launcher.starting_instance')}>
-                        <div className="h-full w-2/5 animate-pulse rounded-full bg-[var(--launcher-brand)]" />
+                      <div className="mt-4 flex items-center gap-3">
+                        <div
+                          className="h-1 flex-1 overflow-hidden rounded-full bg-white/70"
+                          role="progressbar"
+                          aria-label={installProgress ? installProgress.title : t('launcher.starting_instance')}
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                          aria-valuenow={installProgress ? Math.round(installProgress.percentage) : undefined}
+                        >
+                          {installProgress
+                            ? <div className="h-full rounded-full bg-[var(--launcher-brand)] transition-[width] duration-200 motion-reduce:transition-none" style={{ width: `${Math.round(installProgress.percentage)}%` }} />
+                            : <div className="h-full w-2/5 animate-pulse rounded-full bg-[var(--launcher-brand)] motion-reduce:animate-none" />}
+                        </div>
+                        <If cond={installProgress != null}>
+                          <span className="min-w-[42px] flex-none text-right text-xs font-medium tabular-nums text-[var(--launcher-brand-strong)]">
+                            {Math.round(installProgress?.percentage ?? 0)}
+                            %
+                          </span>
+                        </If>
                       </div>
                     </section>
                   )}

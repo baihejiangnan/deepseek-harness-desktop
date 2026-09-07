@@ -47,6 +47,7 @@ pub fn t(key: &str) -> String {
             "Node.js runtime is too old, need v22.15.0+ or v23.8.0+",
         ),
         "harness.title" => ("DeepSeek Harness 核心", "DeepSeek Harness core"),
+        "pnpm.title" => ("pnpm 包管理器", "pnpm package manager"),
         "harness.core_not_found" => (
             "未找到 DeepSeek Harness 核心包，请先完成安装",
             "DeepSeek Harness core package not found, run setup first",
@@ -74,6 +75,9 @@ pub fn t(key: &str) -> String {
         "download.failed" => ("下载失败", "Download failed"),
         "install.downloading" => ("正在下载", "Downloading"),
         "install.extracting" => ("正在解压", "Extracting"),
+        "install.extracted" => ("已解压", "Extracted"),
+        "install.written" => ("已写入", "Written"),
+        "install.preparing" => ("准备中...", "Preparing..."),
         "install.downloaded" => ("已下载", "Downloaded"),
         "install.done" => ("依赖已安装完毕", "Dependencies installed"),
         _ => (key, key),

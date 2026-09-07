@@ -30,7 +30,7 @@ impl<'a, R: Runtime> ProgressTracker<'a, R> {
             window,
             total_phases: task_count,
             current_phase: 0,
-            current_title: String::from("准备中..."),
+            current_title: crate::config::i18n::t("install.preparing"),
             current_type: String::from(""),
             last_emit_time: Mutex::new(None),
         }
@@ -61,10 +61,13 @@ impl<'a, R: Runtime> ProgressTracker<'a, R> {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
 
-        // 节流处理：如果距离上次发送不足 50ms，则跳过
-        if let Some(last_time) = *last_emit {
-            if now.duration_since(last_time) < Duration::from_millis(50) {
-                return;
+        // 节流处理：如果距离上次发送不足 50ms，则跳过。
+        // 完成事件（100%）不得丢弃：前端靠它结束环境准备阶段。
+        if stage_pct < 100.0 {
+            if let Some(last_time) = *last_emit {
+                if now.duration_since(last_time) < Duration::from_millis(50) {
+                    return;
+                }
             }
         }
 

@@ -142,7 +142,7 @@ The launcher only *manages*; it never touches DSH core: no rewriting of DSH's we
 - **Installer**: download the [Windows installer](https://github.com/baihejiangnan/deepseek-harness-desktop/releases/download/v0.0.7/DSH.Launcher_0.0.7_x64-setup.exe), install, and launch from the Start menu or desktop shortcut.
 - **Portable (Windows x64)**: download the [Windows portable executable](https://github.com/baihejiangnan/deepseek-harness-desktop/releases/download/v0.0.7/DSH-Launcher_0.0.7_windows_x64_portable.exe) and double-click to run — no installation required.
 
-The first run prepares the Node.js runtime and the DSH runtime over the network.
+No manual Node.js or DSH installation is required. When you launch an instance for the first time, the launcher detects what is missing and downloads it over the network; compatible runtimes already on your machine are reused first.
 
 > The primary build target is Windows x64; macOS / Linux bundles must be built on their respective platforms.
 

@@ -1,5 +1,8 @@
+import type { UnlistenFn } from '@tauri-apps/api/event'
+import type { InstallProgress } from '../harness/types'
 import type { DshInstance, InstanceRegistry, InstanceSharing, LauncherView } from './types'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import i18next from 'i18next'
 import { defineStore } from 'valtio-define'
@@ -19,6 +22,13 @@ export interface InstanceLaunchFailure {
   message: string
   plugins: string[]
   log: string
+}
+
+/** 本次启动期间的环境准备进度；文案与百分比由后端按阶段上报 */
+export interface InstanceInstallProgress {
+  title: string
+  detail: string
+  percentage: number
 }
 
 function parseLaunchFailure(error: unknown): InstanceLaunchFailure | null {
@@ -46,6 +56,7 @@ export const launcher = defineStore({
     error: '',
     sharing: null as InstanceSharing | null,
     launchFailure: null as InstanceLaunchFailure | null,
+    installProgress: null as InstanceInstallProgress | null,
   }),
   actions: {
     async load() {
@@ -209,8 +220,26 @@ export const launcher = defineStore({
         return false
       this.error = ''
       this.launchFailure = null
+      this.installProgress = null
       this.busyInstanceId = id
+      let unlistenInstall: UnlistenFn | null = null
       try {
+        // 运行时下载在启动器进程内同步完成并上报 install-progress，
+        // 监听必须早于 launch_instance_window，否则首个阶段事件会丢失。
+        unlistenInstall = await listen<InstallProgress>('install-progress', (event) => {
+          const payload = event.payload
+          if (payload.type === 'done') {
+            this.installProgress = null
+            return
+          }
+          const percentage = Math.min(100, Math.max(0, payload.percentage))
+          this.installProgress = {
+            title: payload.title,
+            detail: payload.detail,
+            // 解压 TGZ 时总文件数未知，后端会上报回退值，界面只前进不后退。
+            percentage: Math.max(percentage, this.installProgress?.percentage ?? 0),
+          }
+        })
         await invoke<number>('launch_instance_window', { id, minimized: startMinimized, port })
         this.runningInstanceIds = [...new Set([...this.runningInstanceIds, id])]
         if (minimize) {
@@ -242,6 +271,8 @@ export const launcher = defineStore({
         return false
       }
       finally {
+        unlistenInstall?.()
+        this.installProgress = null
         if (this.busyInstanceId === id)
           this.busyInstanceId = null
       }

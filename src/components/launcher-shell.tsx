@@ -124,7 +124,7 @@ export default function LauncherShell() {
     <div className={`launcher-theme launcher-theme-${appearance.theme} ${appearance.blur ? 'launcher-blur' : ''} flex h-screen w-screen flex-col bg-[var(--launcher-canvas)] text-[var(--launcher-ink)]`}>
       <header className="launcher-header relative flex h-[57px] flex-none items-center bg-[var(--launcher-brand)] px-4 text-white shadow-[0_1px_0_rgba(24,54,106,0.12)] select-none">
         <div className="z-10 shrink-0 text-[19px] font-medium tracking-tight" data-tauri-drag-region>DSH Launcher</div>
-        <nav className="absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 items-center gap-2 max-xl:static max-xl:min-w-0 max-xl:flex-1 max-xl:translate-x-0 max-xl:translate-y-0 max-xl:justify-center max-lg:gap-1">
+        <nav className="absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 items-center gap-2 max-xl:static max-xl:min-w-0 max-xl:flex-1 max-xl:translate-x-0 max-xl:translate-y-0 max-xl:justify-center max-lg:gap-1" data-tauri-drag-region>
           {items.map((item) => {
             const Icon = item.icon
             return (

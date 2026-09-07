@@ -1056,6 +1056,8 @@ pub async fn install(
     }
 
     log::info!("All installation tasks completed");
+    // type 供前端判定环境准备已结束：其后只剩拉起服务和等待端口。
+    tracker.start_phase("done", &config::i18n::t("install.done"));
     tracker.update(
         100.0,
         config::i18n::t("install.done"),

@@ -5,7 +5,7 @@ use tauri::AppHandle;
 
 #[async_trait]
 pub trait Installable: Send + Sync {
-    fn title(&self) -> &str;
+    fn title(&self) -> String;
     fn check_installed(&self, app: &AppHandle) -> bool;
     fn get_download_url(&self) -> Result<String, String>;
     fn get_install_path(&self, app: &AppHandle) -> PathBuf;
@@ -16,8 +16,8 @@ pub struct Nodejs;
 
 #[async_trait]
 impl Installable for Nodejs {
-    fn title(&self) -> &str {
-        "运行环境"
+    fn title(&self) -> String {
+        config::i18n::t("runtime.title")
     }
     fn get_download_url(&self) -> Result<String, String> {
         config::get_node_download_url()
@@ -42,8 +42,8 @@ pub struct Dsh;
 
 #[async_trait]
 impl Installable for Dsh {
-    fn title(&self) -> &str {
-        "Harness 核心"
+    fn title(&self) -> String {
+        config::i18n::t("harness.title")
     }
     fn get_download_url(&self) -> Result<String, String> {
         config::get_dsh_download_url()
@@ -61,8 +61,8 @@ pub struct Pnpm;
 
 #[async_trait]
 impl Installable for Pnpm {
-    fn title(&self) -> &str {
-        "pnpm 包管理器"
+    fn title(&self) -> String {
+        config::i18n::t("pnpm.title")
     }
     fn get_download_url(&self) -> Result<String, String> {
         Ok(config::get_pnpm_download_url())
