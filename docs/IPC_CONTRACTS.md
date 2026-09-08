@@ -1,6 +1,6 @@
 # Tauri 命令与事件契约
 
-核对基线：v0.0.8（`5d5eb99`）+ 工作区未提交的 P0/P1/P2 修复；与已发布的 v0.0.8 二进制对照时注意差异。本文是启动器前后端的关键接口说明，不是 DSH 原生 HTTP API 全集，也不是承诺长期不变的第三方 SDK。精确签名以 [cmd.rs](../src-tauri/src/bridge/cmd.rs) 和 [handler 注册表](../src-tauri/src/desktop/builder.rs) 为准。
+核对基线：v0.0.9 源码（P0/P1/P2 修复已提交）；已发布的 v0.0.8 二进制不含这些修复，对照时注意差异。本文是启动器前后端的关键接口说明，不是 DSH 原生 HTTP API 全集，也不是承诺长期不变的第三方 SDK。精确签名以 [cmd.rs](../src-tauri/src/bridge/cmd.rs) 和 [handler 注册表](../src-tauri/src/desktop/builder.rs) 为准。
 
 ## 调用与命名
 
