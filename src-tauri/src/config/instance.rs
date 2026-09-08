@@ -101,30 +101,99 @@ fn registry_path(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| format!("INSTANCE_REGISTRY_PATH: {error}"))
 }
 
-fn read_registry(app: &AppHandle) -> Result<InstanceRegistry, String> {
-    let path = registry_path(app)?;
-    if !path.exists() {
-        return Ok(InstanceRegistry::default());
-    }
-    let content =
-        fs::read_to_string(&path).map_err(|error| format!("INSTANCE_REGISTRY_READ: {error}"))?;
-    let mut registry: InstanceRegistry = serde_json::from_str(&content)
-        .map_err(|error| format!("INSTANCE_REGISTRY_INVALID: {error}"))?;
+fn registry_sibling(path: &Path, suffix: &str) -> PathBuf {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| REGISTRY_FILE.to_string());
+    path.with_file_name(format!("{name}{suffix}"))
+}
+
+/// 读取已存储记录时的 Home 规范化：单条记录不可用不能拖垮整个注册表，
+/// 退回原始值并告警，让用户仍能看到该实例并用“仅移除记录”修复。
+fn normalize_stored_home(path: &Path) -> PathBuf {
+    normalize_home(path).unwrap_or_else(|error| {
+        log::warn!(
+            "instance home {} cannot be normalized, keeping the stored value: {error}",
+            path.display()
+        );
+        path.to_path_buf()
+    })
+}
+
+fn parse_registry(content: &str) -> Result<InstanceRegistry, serde_json::Error> {
+    let mut registry: InstanceRegistry = serde_json::from_str(content)?;
     for instance in &mut registry.instances {
-        instance.dsh_home = normalize_home(&instance.dsh_home)?;
+        instance.dsh_home = normalize_stored_home(&instance.dsh_home);
     }
     Ok(registry)
 }
 
-fn write_registry(app: &AppHandle, registry: &InstanceRegistry) -> Result<(), String> {
-    let path = registry_path(app)?;
+fn read_registry_at(path: &Path) -> Result<InstanceRegistry, String> {
+    let backup = registry_sibling(path, ".bak");
+    if !path.exists() {
+        // 主文件缺失但备份存在：上次写入在替换完成前被中断
+        if let Ok(backup_content) = fs::read_to_string(&backup) {
+            if let Ok(registry) = parse_registry(&backup_content) {
+                log::error!(
+                    "{} is missing; recovered the instance registry from {}",
+                    path.display(),
+                    backup.display()
+                );
+                return Ok(registry);
+            }
+        }
+        return Ok(InstanceRegistry::default());
+    }
+    let content =
+        fs::read_to_string(path).map_err(|error| format!("INSTANCE_REGISTRY_READ: {error}"))?;
+    match parse_registry(&content) {
+        Ok(registry) => Ok(registry),
+        Err(error) => {
+            if let Ok(backup_content) = fs::read_to_string(&backup) {
+                if let Ok(registry) = parse_registry(&backup_content) {
+                    log::error!(
+                        "{} is corrupt ({error}); recovered the instance registry from {}",
+                        path.display(),
+                        backup.display()
+                    );
+                    return Ok(registry);
+                }
+            }
+            Err(format!("INSTANCE_REGISTRY_INVALID: {error}"))
+        }
+    }
+}
+
+fn read_registry(app: &AppHandle) -> Result<InstanceRegistry, String> {
+    read_registry_at(&registry_path(app)?)
+}
+
+fn write_registry_at(path: &Path, registry: &InstanceRegistry) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("INSTANCE_REGISTRY_CREATE: {error}"))?;
     }
     let content = serde_json::to_string_pretty(registry)
         .map_err(|error| format!("INSTANCE_REGISTRY_SERIALIZE: {error}"))?;
-    fs::write(&path, format!("{content}\n"))
-        .map_err(|error| format!("INSTANCE_REGISTRY_WRITE: {error}"))
+    // 同目录暂存 + rename 原子替换：崩溃或断电只会留下无用暂存文件，
+    // 主文件始终是完整的旧版或完整的新版。
+    let staging = registry_sibling(path, ".tmp");
+    fs::write(&staging, format!("{content}\n"))
+        .map_err(|error| format!("INSTANCE_REGISTRY_WRITE: {error}"))?;
+    // 替换前保留上一份可用注册表。备份失败不阻断本次写入。
+    if path.exists() {
+        if let Err(error) = fs::copy(path, registry_sibling(path, ".bak")) {
+            log::warn!("failed to back up {}: {error}", path.display());
+        }
+    }
+    fs::rename(&staging, path).map_err(|error| {
+        let _ = fs::remove_file(&staging);
+        format!("INSTANCE_REGISTRY_WRITE: {error}")
+    })
+}
+
+fn write_registry(app: &AppHandle, registry: &InstanceRegistry) -> Result<(), String> {
+    write_registry_at(&registry_path(app)?, registry)
 }
 
 fn validate_profile(profile: &str) -> Result<(), String> {
@@ -299,6 +368,26 @@ pub fn select(app: &AppHandle, id: &str) -> Result<DshInstance, String> {
 pub fn remove(app: &AppHandle, id: &str) -> Result<InstanceRegistry, String> {
     let mut registry = read_registry(app)?;
     let impact = removal_impact_from_registry(&registry, id)?;
+    // 守卫必须在删除入口内部：命令层的检查只看本进程宿主表，看不到上一会话
+    // 崩溃或被强杀后遗留、仍在写这个 Home 的 DSH 进程。
+    if let Some(pid) = crate::service::workflow::home_service_is_live(&impact.dsh_home) {
+        let affected = impact
+            .instances
+            .iter()
+            .find(|instance| instance.id == id)
+            .or_else(|| impact.instances.first());
+        log::error!(
+            "refusing to remove DSH_HOME {}: harness process {pid} is still alive",
+            impact.dsh_home.display()
+        );
+        return Err(match affected {
+            Some(instance) => format!("INSTANCE_HOME_RUNNING:{}:{}", instance.id, instance.name),
+            None => {
+                "INSTANCE_HOME_RUNNING:stop the DSH service using this DSH_HOME before removing it"
+                    .to_string()
+            }
+        });
+    }
     remove_home_directory(&impact.dsh_home)?;
     let removed_ids: std::collections::HashSet<&str> = impact
         .instances
@@ -380,8 +469,17 @@ pub fn removal_impact(app: &AppHandle, id: &str) -> Result<InstanceRemovalImpact
 }
 
 /// 删除实例数据前拒绝文件系统根目录，避免错误配置扩大删除范围。
+///
+/// 存活进程门在这里再查一遍：`remove` 里的同一检查是为了在写注册表之前就失败，
+/// 并能报出实例名；这一层保证任何未来的调用方也无法绕过删除一个仍在使用的 Home。
 fn remove_home_directory(home: &Path) -> Result<(), String> {
     let normalized = normalize_home(home)?;
+    if let Some(pid) = crate::service::workflow::home_service_is_live(&normalized) {
+        return Err(format!(
+            "INSTANCE_HOME_RUNNING: {pid} is still using {}",
+            normalized.display()
+        ));
+    }
     if normalized.parent().is_none() {
         return Err("INSTANCE_HOME_UNSAFE: refusing to remove a filesystem root".to_string());
     }
@@ -527,5 +625,166 @@ mod tests {
         remove_home_directory(&home).expect("remove test instance");
 
         assert!(!home.exists());
+    }
+
+    fn registry_with(id: &str, home: &Path) -> InstanceRegistry {
+        InstanceRegistry {
+            instances: vec![DshInstance {
+                id: id.into(),
+                name: id.into(),
+                dsh_home: home.to_path_buf(),
+                profile: "web".into(),
+                version: DshVersionRef::default(),
+                favorite: false,
+                created_at: 0,
+                repair_assistant: false,
+            }],
+            active_instance_id: Some(id.into()),
+        }
+    }
+
+    fn temp_registry_dir(case: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("dsh-registry-{case}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create temp registry dir");
+        dir
+    }
+
+    #[test]
+    fn registry_write_keeps_previous_generation_as_backup() {
+        let dir = temp_registry_dir("atomic");
+        let path = dir.join(REGISTRY_FILE);
+
+        write_registry_at(&path, &registry_with("first", &dir.join("home-a")))
+            .expect("first write");
+        assert!(
+            !registry_sibling(&path, ".bak").exists(),
+            "first write has no previous generation"
+        );
+
+        write_registry_at(&path, &registry_with("second", &dir.join("home-b")))
+            .expect("second write");
+
+        let backup: InstanceRegistry =
+            serde_json::from_str(&fs::read_to_string(registry_sibling(&path, ".bak")).unwrap())
+                .expect("backup parses");
+        assert_eq!(backup.instances[0].id, "first");
+        assert_eq!(read_registry_at(&path).unwrap().instances[0].id, "second");
+        assert!(
+            !registry_sibling(&path, ".tmp").exists(),
+            "staging file is consumed by rename"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupt_registry_recovers_from_backup() {
+        let dir = temp_registry_dir("corrupt");
+        let path = dir.join(REGISTRY_FILE);
+        write_registry_at(&path, &registry_with("kept", &dir.join("home"))).expect("seed");
+        write_registry_at(&path, &registry_with("lost", &dir.join("home"))).expect("second");
+        // 备份此刻是 "kept"，主文件随后被写坏
+        fs::write(&path, "{ not json").expect("corrupt primary");
+
+        let registry = read_registry_at(&path).expect("recover from backup");
+        assert_eq!(registry.instances[0].id, "kept");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_registry_recovers_from_backup() {
+        let dir = temp_registry_dir("missing");
+        let path = dir.join(REGISTRY_FILE);
+        write_registry_at(&path, &registry_with("first", &dir.join("home"))).expect("seed");
+        write_registry_at(&path, &registry_with("second", &dir.join("home"))).expect("second");
+        fs::remove_file(&path).expect("drop primary");
+
+        let registry = read_registry_at(&path).expect("recover from backup");
+        assert_eq!(registry.instances[0].id, "first");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupt_registry_without_backup_still_reports_invalid() {
+        let dir = temp_registry_dir("no-backup");
+        let path = dir.join(REGISTRY_FILE);
+        fs::write(&path, "{ not json").expect("corrupt primary");
+
+        let error = read_registry_at(&path).expect_err("no backup to recover from");
+        assert!(error.starts_with("INSTANCE_REGISTRY_INVALID:"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn one_unusable_home_does_not_break_the_whole_registry() {
+        let dir = temp_registry_dir("partial");
+        let path = dir.join(REGISTRY_FILE);
+        let healthy = dir.join("healthy-home");
+        let content = serde_json::json!({
+            "instances": [
+                {
+                    "id": "broken", "name": "Broken", "dshHome": "", "profile": "web",
+                    "version": { "channel": "preview", "tag": "latest" },
+                    "favorite": false, "createdAt": 1
+                },
+                {
+                    "id": "healthy", "name": "Healthy", "dshHome": healthy, "profile": "web",
+                    "version": { "channel": "preview", "tag": "latest" },
+                    "favorite": false, "createdAt": 2
+                }
+            ],
+            "activeInstanceId": "healthy"
+        });
+        fs::write(&path, serde_json::to_string_pretty(&content).unwrap()).expect("write registry");
+
+        let registry = read_registry_at(&path).expect("registry stays readable");
+        assert_eq!(
+            registry.instances.len(),
+            2,
+            "the healthy instance is still listed"
+        );
+        assert_eq!(registry.active_instance_id.as_deref(), Some("healthy"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stale_home_marker_does_not_block_removal() {
+        let home = std::env::temp_dir().join(format!("dsh-stale-marker-{}", std::process::id()));
+        fs::create_dir_all(&home).expect("create home");
+        // 极大 PID 在任何平台都不可能是存活进程
+        fs::write(home.join(".harness.pid"), "4000000000\n3080\n").expect("write stale marker");
+
+        assert_eq!(crate::service::workflow::home_service_is_live(&home), None);
+        remove_home_directory(&home).expect("stale marker must not block removal");
+        assert!(!home.exists());
+    }
+
+    #[test]
+    fn live_home_marker_blocks_removal() {
+        let home = std::env::temp_dir().join(format!("dsh-live-marker-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).expect("create home");
+        // 测试进程自身必然存活，用它作为"服务仍在跑"的样本
+        fs::write(
+            home.join(".harness.pid"),
+            format!("{}\n3080\n", std::process::id()),
+        )
+        .expect("write live marker");
+
+        assert_eq!(
+            crate::service::workflow::home_service_is_live(&home),
+            Some(std::process::id())
+        );
+
+        let error = remove_home_directory(&home).expect_err("a live marker must block removal");
+        assert!(error.starts_with("INSTANCE_HOME_RUNNING:"), "{error}");
+        assert!(home.exists(), "a refused removal must leave the Home intact");
+
+        let _ = fs::remove_dir_all(&home);
     }
 }

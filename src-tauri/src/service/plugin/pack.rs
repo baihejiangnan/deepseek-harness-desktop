@@ -521,17 +521,10 @@ fn validate_source_url(url: &str) -> Result<(), String> {
 }
 
 fn validate_spec(spec: &str) -> Result<(), String> {
-    if spec.is_empty()
-        || spec.len() > 512
-        || spec.starts_with('-')
-        || spec.chars().any(char::is_control)
-        || spec.starts_with("file:")
-        || spec.starts_with("link:")
-        || spec.contains('\\')
-    {
-        return Err("PLUGIN_PACK_SPEC_INVALID: local or unsafe package spec".to_string());
+    match super::install::spec_violation(spec) {
+        Some(reason) => Err(format!("PLUGIN_PACK_SPEC_INVALID: {reason}")),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 fn valid_id(value: &str) -> bool {

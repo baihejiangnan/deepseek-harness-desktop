@@ -264,17 +264,10 @@ fn parse_install_command(command: &str) -> Option<String> {
 }
 
 fn validate_spec(spec: &str) -> Result<(), String> {
-    if spec.is_empty()
-        || spec.len() > 512
-        || spec.starts_with('-')
-        || spec.chars().any(char::is_control)
-    {
-        return Err("PLUGIN_CATALOG_INVALID_SPEC: catalog source is invalid".to_string());
+    match super::install::spec_violation(spec) {
+        Some(reason) => Err(format!("PLUGIN_CATALOG_INVALID_SPEC: {reason}")),
+        None => Ok(()),
     }
-    if spec.starts_with("file:") || spec.starts_with("link:") || spec.contains('\\') {
-        return Err("PLUGIN_CATALOG_UNSUPPORTED_SPEC: local paths are not allowed from the community catalog".to_string());
-    }
-    Ok(())
 }
 
 #[cfg(test)]

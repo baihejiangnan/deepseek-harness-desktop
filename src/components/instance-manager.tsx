@@ -47,6 +47,12 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
   const sameProfile = active ? registry.instances.filter(item => item.dshHome === active.dshHome && item.profile === active.profile).length : 0
   const level = sameProfile > 1 ? 'shared_profile' : sameHome > 1 ? 'shared_home' : 'isolated'
   const runningAffected = affectedInstances.filter(item => runningInstanceIds.includes(item.id))
+  // 守卫在删除入口内拒绝时弹窗仍保持打开，错误必须落在弹窗里，否则用户看不到任何反馈。
+  const removalError = error === ''
+    ? ''
+    : error.startsWith('INSTANCE_HOME_RUNNING:')
+      ? t('launcher.remove_instance_leftover_running')
+      : error
   const removeState = useOverlayState({
     isOpen: removeOpen,
     onOpenChange: setRemoveOpen,
@@ -108,6 +114,8 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
     if (!active)
       return
     if (confirmBeforeRemoval) {
+      // 弹窗内的反馈只应来自本次删除尝试，不带入此前其他操作的残留错误
+      store.launcher.error = ''
       setRemoveOpen(true)
       return
     }
@@ -343,13 +351,13 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
                           aria-label={installProgress ? installProgress.title : t('launcher.starting_instance')}
                           aria-valuemin={0}
                           aria-valuemax={100}
-                          aria-valuenow={installProgress ? Math.round(installProgress.percentage) : undefined}
+                          aria-valuenow={installProgress && !installProgress.indeterminate ? Math.round(installProgress.percentage) : undefined}
                         >
-                          {installProgress
+                          {installProgress && !installProgress.indeterminate
                             ? <div className="h-full rounded-full bg-[var(--launcher-brand)] transition-[width] duration-200 motion-reduce:transition-none" style={{ width: `${Math.round(installProgress.percentage)}%` }} />
                             : <div className="h-full w-2/5 animate-pulse rounded-full bg-[var(--launcher-brand)] motion-reduce:animate-none" />}
                         </div>
-                        <If cond={installProgress != null}>
+                        <If cond={installProgress != null && !installProgress.indeterminate}>
                           <span className="min-w-[42px] flex-none text-right text-xs font-medium tabular-nums text-[var(--launcher-brand-strong)]">
                             {Math.round(installProgress?.percentage ?? 0)}
                             %
@@ -406,7 +414,7 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
                       {t('launcher.remove_instance')}
                     </Button>
                   </div>
-                  <If cond={error !== ''}><p className="mt-4 text-xs text-danger">{error}</p></If>
+                  <If cond={error !== ''}><p className="mt-4 text-xs text-danger">{removalError}</p></If>
                 </div>
               </If>
             </main>
@@ -435,6 +443,9 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
                 </If>
                 <If cond={runningAffected.length > 0}>
                   <p className="m-0 text-xs text-danger">{t('launcher.remove_instance_running')}</p>
+                </If>
+                <If cond={removalError !== ''}>
+                  <p className="m-0 text-xs text-danger">{removalError}</p>
                 </If>
               </Modal.Body>
               <Modal.Footer>

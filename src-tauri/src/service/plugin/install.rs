@@ -99,6 +99,23 @@ fn tokenize_manual_command(line: &str) -> Result<Vec<String>, String> {
     Ok(tokens)
 }
 
+/// 包规格的安全策略，所有安装入口共用：拒绝空值、超长、控制字符、以 `-` 开头
+/// 的参数，以及 `file:`/`link:` 与反斜杠本地路径。返回违规原因，由调用方套用
+/// 各自的错误码前缀。手动输入历史上只做前四项校验，绕过了社区目录与插件包
+/// 市场已经施加的本地路径限制。
+pub(crate) fn spec_violation(spec: &str) -> Option<&'static str> {
+    if spec.is_empty() || spec.len() > 512 || spec.chars().any(char::is_control) {
+        return Some("package spec is empty or invalid");
+    }
+    if spec.starts_with('-') {
+        return Some("package spec cannot start with '-'");
+    }
+    if spec.starts_with("file:") || spec.starts_with("link:") || spec.contains('\\') {
+        return Some("local package paths are not allowed");
+    }
+    None
+}
+
 /// 安装用户提供的 npm/git 包规格：`dsh plugin --profile <active> add <specs...>`。
 /// 不读取或依赖任何本地插件目录，包规格由远程市场或用户手动输入提供。
 pub async fn install(app_handle: &AppHandle, specs: &[String]) -> Result<(), String> {
@@ -108,15 +125,8 @@ pub async fn install(app_handle: &AppHandle, specs: &[String]) -> Result<(), Str
     let mut normalized_specs = Vec::with_capacity(specs.len());
     for spec in specs {
         let value = spec.trim();
-        if value.is_empty() || value.len() > 512 || value.chars().any(char::is_control) {
-            return Err(
-                "PLUGIN_INSTALL_INVALID_SPEC: package spec is empty or invalid".to_string(),
-            );
-        }
-        if value.starts_with('-') {
-            return Err(
-                "PLUGIN_INSTALL_INVALID_SPEC: package spec cannot start with '-'".to_string(),
-            );
+        if let Some(reason) = spec_violation(value) {
+            return Err(format!("PLUGIN_INSTALL_INVALID_SPEC: {reason}"));
         }
         normalized_specs.push(value.to_string());
     }
@@ -229,6 +239,12 @@ pub async fn install(app_handle: &AppHandle, specs: &[String]) -> Result<(), Str
         let (code, captured) = run_plugin_process(&node, &args, &cwd, &envs, &window).await?;
         if code == 0 {
             break (0, captured);
+        }
+
+        // 取消同样表现为非零退出：此时不能再走锁文件修复或 allowBuilds 重试，
+        // 否则用户取消后仍会重新拉起子进程。
+        if crate::service::plugin::install_was_cancelled() {
+            break (code, captured);
         }
 
         // pnpm refuses a frozen install when a git/tarball lock entry lacks
@@ -721,7 +737,34 @@ fn parse_allowlist_keys(output: &str) -> Vec<String> {
         }
     }
 
+    // 键取自 pnpm 输出，而输出内容可被正在安装的包自身影响：写入 profile 配置前
+    // 按形态收口，拒绝不可能出现在 npm 包名或 git depPath 里的字符。
+    keys.retain(|key| {
+        if valid_allow_build_key(key) {
+            true
+        } else {
+            log::warn!("dropping malformed allowBuilds key parsed from pnpm output: {key:?}");
+            false
+        }
+    });
+
     keys
+}
+
+/// `allowBuilds` 键的合法形态：npm 包名（可带 @scope），或 pnpm 报出的 git depPath
+/// （`name@<url>`，含 `:`/`/`/`#`/`+`）。空白、引号、反斜杠、shell 元字符不可能出现
+/// 在这两类值里，出现即说明解析到了被污染的输出。
+fn valid_allow_build_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= 512
+        && !key.starts_with('-')
+        && key.chars().all(|ch| {
+            ch.is_ascii_alphanumeric()
+                || matches!(
+                    ch,
+                    '.' | '_' | '-' | '/' | '@' | ':' | '+' | '#' | '~' | '%'
+                )
+        })
 }
 
 fn quoted_after(line: &str, marker: &str) -> Option<String> {
@@ -758,6 +801,27 @@ fn profile_workspace_path(app_handle: &AppHandle) -> PathBuf {
     profile_dir(app_handle).join("pnpm-workspace.yaml")
 }
 
+/// 收集 `pnpm-workspace.yaml` 中已有的 `  <key>: true` 条目（含单引号形式）。
+/// 基础模板里的 `packages`/`nodeLinker`/`autoInstallPeers` 等行不会以 `: true`
+/// 结尾，天然被排除。git depPath 键含 `:`，必须参与去重，否则每次重试都会重复追加。
+fn existing_allow_build_keys(content: &str) -> Vec<String> {
+    content
+        .lines()
+        .filter_map(|l| {
+            let trimmed = l.trim_start();
+            if trimmed.len() == l.len() {
+                return None; // 非缩进行（顶层键）不参与
+            }
+            let suffix = trimmed.strip_suffix(": true")?;
+            let key = suffix.trim().trim_matches(['\'', '"']);
+            if key.is_empty() {
+                return None;
+            }
+            Some(key.to_string())
+        })
+        .collect()
+}
+
 /// 把新的 `allowBuilds` 键合并写回 profile 的 `pnpm-workspace.yaml`。
 ///
 /// dsh 的 `initProfile` 仅在文件缺失时创建（其模板无 `allowBuilds`），因此桌面端
@@ -788,24 +852,7 @@ fn add_allow_build_keys(app_handle: &AppHandle, keys: &[String]) -> Result<(), S
         content.push_str("allowBuilds:\n");
     }
 
-    // 收集已有 `  <key>: true` 条目（含单引号形式），避免重复。基础模板里
-    // 的 `packages`/`nodeLinker`/`autoInstallPeers` 等行不会以 `: true` 结尾，
-    // 天然被排除。
-    let existing: Vec<String> = content
-        .lines()
-        .filter_map(|l| {
-            let trimmed = l.trim_start();
-            if trimmed.len() == l.len() {
-                return None; // 非缩进行（顶层键）不参与
-            }
-            let suffix = trimmed.strip_suffix(": true")?;
-            let key = suffix.trim().trim_matches(['\'', '"']);
-            if key.is_empty() || key.contains(':') {
-                return None;
-            }
-            Some(key.to_string())
-        })
-        .collect();
+    let existing = existing_allow_build_keys(&content);
 
     let mut dirty = false;
     for key in keys {
@@ -936,5 +983,68 @@ The git-hosted package "dsh-web-plugin-manager@0.4.7" needs to execute build scr
         // 无缩进（顶层键）不应被当作白名单条目
         assert_eq!(extract_allow_line_key("packages:"), None);
         assert_eq!(extract_allow_line_key("allowBuilds:"), None);
+    }
+
+    #[test]
+    fn spec_policy_rejects_local_paths_on_every_entry() {
+        // 手动输入历史上只校验空值/超长/控制字符/'-' 开头，本地路径能绕过
+        assert!(super::spec_violation("file:../local-plugin").is_some());
+        assert!(super::spec_violation("link:../local-plugin").is_some());
+        assert!(super::spec_violation(r"D:\plugins\local.tgz").is_some());
+        assert!(super::spec_violation("--registry=http://evil").is_some());
+        assert!(super::spec_violation("").is_some());
+        assert!(super::spec_violation(&"a".repeat(513)).is_some());
+        assert!(super::spec_violation("bad\nspec").is_some());
+
+        // 社区命令实际使用的三类规格必须放行
+        assert!(super::spec_violation("@liustack/modlens").is_none());
+        assert!(super::spec_violation("github:owner/repo#feature/sidebar").is_none());
+        let archive = "https://github.com/owner/repo/archive/refs/tags/v0.6.3.tar.gz";
+        assert!(super::spec_violation(archive).is_none());
+    }
+
+    #[test]
+    fn allow_build_dedup_recognizes_git_dep_path_keys() {
+        let content = "\
+packages:
+  - .
+
+nodeLinker: hoisted
+autoInstallPeers: false
+allowBuilds:
+  'dsh-better-sidebar@git+ssh://git@github.com/omdsh-dev/DSH-better-sidebar.git#6c89': true
+  node-pty: true
+";
+        let existing = super::existing_allow_build_keys(content);
+        // 含冒号的 git depPath 键必须参与去重，否则每次重试都会重复追加
+        assert!(existing.contains(
+            &"dsh-better-sidebar@git+ssh://git@github.com/omdsh-dev/DSH-better-sidebar.git#6c89"
+                .to_string()
+        ));
+        assert!(existing.contains(&"node-pty".to_string()));
+        // 顶层键不以 ": true" 结尾，天然被排除
+        assert!(!existing.iter().any(|key| key.contains("nodeLinker")));
+    }
+
+    #[test]
+    fn allowlist_keys_from_polluted_output_are_dropped() {
+        // 键取自 pnpm 输出，包自身可以影响这段文本：形态非法的键不得写入 profile 配置
+        let polluted = "\
+allowBuilds:
+  evil key; curl http://attacker: true
+";
+        assert!(super::parse_allowlist_keys(polluted).is_empty());
+
+        let legitimate = "\
+allowBuilds:
+  dsh-better-sidebar@git+ssh://git@github.com/omdsh-dev/DSH-better-sidebar.git#6c89: true
+";
+        assert_eq!(
+            super::parse_allowlist_keys(legitimate),
+            vec![
+                "dsh-better-sidebar@git+ssh://git@github.com/omdsh-dev/DSH-better-sidebar.git#6c89"
+                    .to_string()
+            ]
+        );
     }
 }

@@ -72,6 +72,9 @@ fn rpc_client() -> Result<reqwest::Client, String> {
     RPC_CLIENT
         .get_or_init(|| {
             reqwest::Client::builder()
+                // 协作 RPC 只走 loopback 且不携带令牌；经环境变量代理转发等于把
+                // 无鉴权的会话内容交给第三方，与 is_dsh_running 一致地禁用代理。
+                .no_proxy()
                 .timeout(RPC_TIMEOUT)
                 .build()
                 .map_err(|error| format!("collab http client: {error}"))

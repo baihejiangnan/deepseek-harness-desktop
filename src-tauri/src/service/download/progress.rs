@@ -73,9 +73,7 @@ impl<'a, R: Runtime> ProgressTracker<'a, R> {
 
         *last_emit = Some(now);
 
-        let phase_weight = 100.0 / self.total_phases as f64;
-        let global_pct =
-            (self.current_phase as f64 * phase_weight) + (stage_pct * phase_weight / 100.0);
+        let global_pct = weighted_percentage(self.current_phase, self.total_phases, stage_pct);
 
         let _ = self.window.emit(
             "install-progress",
@@ -93,5 +91,58 @@ impl<'a, R: Runtime> ProgressTracker<'a, R> {
     /// 跳过指定数量的阶段
     pub fn skip_phases(&mut self, count: usize) {
         self.current_phase = (self.current_phase + count).min(self.total_phases);
+    }
+}
+
+/// 阶段加权总进度，收敛到 0–100。
+///
+/// `stage_pct < 0` 表示本阶段总量不可测量（如 TGZ 解压），此时只保留已完成阶段的
+/// 底数，不把负值计入加权。`total_phases` 为 0 时权重会是无穷大，兜住以免算出
+/// NaN/inf。done 阶段 `current_phase` 已等于 `total_phases`，叠加后可能略超 100。
+fn weighted_percentage(current_phase: usize, total_phases: usize, stage_pct: f64) -> f64 {
+    let phase_weight = 100.0 / total_phases.max(1) as f64;
+    let stage_contribution = if stage_pct < 0.0 {
+        0.0
+    } else {
+        stage_pct * phase_weight / 100.0
+    };
+    ((current_phase as f64 * phase_weight) + stage_contribution).clamp(0.0, 100.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::weighted_percentage;
+
+    #[test]
+    fn final_phase_never_overshoots_one_hundred() {
+        // 最后一个阶段再叠加越界的子进度也不能超过 100。
+        assert_eq!(weighted_percentage(3, 3, 100.0), 100.0);
+        assert_eq!(weighted_percentage(3, 3, 250.0), 100.0);
+    }
+
+    #[test]
+    fn out_of_range_stage_is_clamped_into_the_band() {
+        assert_eq!(weighted_percentage(0, 4, 140.0), 35.0);
+        assert_eq!(weighted_percentage(0, 4, -0.5), 0.0);
+    }
+
+    #[test]
+    fn zero_phases_yields_a_finite_percentage() {
+        let value = weighted_percentage(0, 0, 100.0);
+        assert!(value.is_finite(), "expected finite, got {value}");
+        assert!((0.0..=100.0).contains(&value));
+    }
+
+    #[test]
+    fn unmeasurable_stage_keeps_only_the_completed_base() {
+        // -1 必须原样透出给前端用来判定不确定态，同时总进度停在已完成阶段底数上。
+        assert_eq!(weighted_percentage(2, 4, -1.0), 50.0);
+        assert_eq!(weighted_percentage(0, 4, -1.0), 0.0);
+    }
+
+    #[test]
+    fn skipped_phases_advance_the_base() {
+        assert_eq!(weighted_percentage(1, 4, 0.0), 25.0);
+        assert_eq!(weighted_percentage(4, 4, 0.0), 100.0);
     }
 }

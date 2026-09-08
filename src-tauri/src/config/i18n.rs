@@ -76,6 +76,7 @@ pub fn t(key: &str) -> String {
         "install.downloading" => ("正在下载", "Downloading"),
         "install.extracting" => ("正在解压", "Extracting"),
         "install.extracted" => ("已解压", "Extracted"),
+        "install.files" => ("个文件", "files"),
         "install.written" => ("已写入", "Written"),
         "install.preparing" => ("准备中...", "Preparing..."),
         "install.downloaded" => ("已下载", "Downloaded"),

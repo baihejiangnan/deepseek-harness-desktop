@@ -29,6 +29,8 @@ export interface InstanceInstallProgress {
   title: string
   detail: string
   percentage: number
+  /** 后端 progress 为 -1 表示本阶段总量不可测量，此时不展示确定百分比 */
+  indeterminate: boolean
 }
 
 function parseLaunchFailure(error: unknown): InstanceLaunchFailure | null {
@@ -233,11 +235,13 @@ export const launcher = defineStore({
             return
           }
           const percentage = Math.min(100, Math.max(0, payload.percentage))
+          const indeterminate = payload.progress < 0
           this.installProgress = {
             title: payload.title,
             detail: payload.detail,
-            // 解压 TGZ 时总文件数未知，后端会上报回退值，界面只前进不后退。
+            // 总量不可测量时后端上报 -1，界面转为不确定态，不再推进百分比。
             percentage: Math.max(percentage, this.installProgress?.percentage ?? 0),
+            indeterminate,
           }
         })
         await invoke<number>('launch_instance_window', { id, minimized: startMinimized, port })

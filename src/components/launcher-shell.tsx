@@ -22,7 +22,7 @@ const DSH_UPDATE_POLL_INTERVAL = 10 * 60_000
 export default function LauncherShell() {
   const { t } = useTranslation()
   const { loading, registry } = useStore(store.launcher)
-  const { updating, progress, phaseTitle } = useStore(updater)
+  const { updating, progress, phaseTitle, indeterminate } = useStore(updater)
   const [appearance, setAppearance] = useState({ theme: 'mist-blue-sakura-pink', blur: false })
   const [section, setSection] = useState<Section>('launch')
   const [launchRequest, setLaunchRequest] = useState(0)
@@ -159,8 +159,10 @@ export default function LauncherShell() {
         </button>
       </header>
       {updating && (
-        <div className="h-1 w-full flex-none bg-[var(--launcher-selected)]" role="progressbar" aria-label={t('update.dsh_updating')} aria-valuetext={phaseTitle || t('update.dsh_updating')} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress)}>
-          <div className="h-full bg-[var(--launcher-brand)] transition-[width] duration-200 ease-out" style={{ width: `${Math.max(0, Math.min(100, progress))}%` }} />
+        <div className="h-1 w-full flex-none overflow-hidden bg-[var(--launcher-selected)]" role="progressbar" aria-label={t('update.dsh_updating')} aria-valuetext={phaseTitle || t('update.dsh_updating')} aria-valuemin={0} aria-valuemax={100} aria-valuenow={indeterminate ? undefined : Math.round(progress)}>
+          {indeterminate
+            ? <div className="h-full w-2/5 animate-pulse bg-[var(--launcher-brand)] motion-reduce:animate-none" />
+            : <div className="h-full bg-[var(--launcher-brand)] transition-[width] duration-200 ease-out motion-reduce:transition-none" style={{ width: `${Math.max(0, Math.min(100, progress))}%` }} />}
         </div>
       )}
       {!updating && packProgress && packProgress.total > 0 && (

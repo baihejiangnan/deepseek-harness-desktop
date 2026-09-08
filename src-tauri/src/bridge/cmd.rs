@@ -162,6 +162,29 @@ fn instance_operation_lock() -> &'static tokio::sync::Mutex<()> {
     INSTANCE_OPERATION_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
+static INSTALL_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+/// 环境安装互斥锁。原先用 `Status::Installing` 兼作并发标志，但该状态在失败路径
+/// 上从不复位，一次下载/校验/解压失败后所有重试都被静默跳过，只能重启应用。
+/// 改成真正的锁：失败即释放，后到的调用等待前一次结束后按实际落盘状态重新判定，
+/// 而不是依据陈旧标志跳过安装。
+fn install_lock() -> &'static tokio::sync::Mutex<()> {
+    INSTALL_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// 安装期间置 Installing；无论成功、失败还是 `?` 提前返回都恢复进入前的状态。
+struct InstallStatusGuard {
+    app_handle: AppHandle,
+    previous: workflow::status::Status,
+}
+
+impl Drop for InstallStatusGuard {
+    fn drop(&mut self) {
+        workflow::status::set_status(self.previous.clone());
+        workflow::status::emit_status(&self.app_handle);
+    }
+}
+
 #[cfg(windows)]
 struct InstanceWindowSearch {
     pid: u32,
@@ -392,10 +415,9 @@ fn sync_cli_link(app_handle: &AppHandle) {
 #[tauri::command]
 pub async fn install_dependencies(app_handle: AppHandle) -> Result<bool, String> {
     ensure_launcher_update_context()?;
-    if workflow::status::get_status() == workflow::status::Status::Installing {
-        log::info!("Installation process already running, skipping");
-        return Ok(false);
-    }
+    // 串行化环境安装：后到的调用等待前一次结束，再按实际落盘状态重新判定，
+    // 不会因为一个陈旧的状态标志而跳过真正需要的安装。
+    let _install_guard = install_lock().lock().await;
 
     // Adopt a user installation instead of downloading a duplicate managed core.
     if let Some(runtime) = config::active(&app_handle) {
@@ -518,6 +540,12 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<bool, String>
     }
 
     log::info!("Dependencies missing or outdated, starting installation process");
+    // 守卫必须在置 Installing 之前记录原状态：install 失败经 `?` 返回时也要复位，
+    // 否则一次下载/校验/解压失败就让后续所有重试被静默跳过。
+    let _status_guard = InstallStatusGuard {
+        previous: workflow::status::get_status(),
+        app_handle: app_handle.clone(),
+    };
     workflow::status::set_status(workflow::status::Status::Installing);
     workflow::status::emit_status(&app_handle);
     // 返回 dsh 是否真正落盘更新：仅重装 Node/pnpm 或全部任务被跳过（例如
@@ -778,6 +806,12 @@ pub async fn launch_instance_window(
             use std::os::windows::process::CommandExt;
             command.creation_flags(0x08000000);
         }
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::process::CommandExt;
+            // 自成进程组：停止时才能按负 PID 结束宿主及其派生的 DSH 整棵树。
+            command.process_group(0);
+        }
         let child = command
             .spawn()
             .map_err(|error| format!("INSTANCE_HOST_SPAWN: {error}"))?;
@@ -894,11 +928,11 @@ pub fn focus_instance_window(id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn quit_app(app_handle: AppHandle) {
-    if ensure_launcher_update_context().is_err() {
-        return;
-    }
+pub fn quit_app(app_handle: AppHandle) -> Result<(), String> {
+    // 静默返回成功会让调用方以为启动器已退出；实例宿主没有可退出的启动器。
+    ensure_launcher_update_context()?;
     app_handle.exit(0);
+    Ok(())
 }
 
 /// Only stop child handles owned by this launcher, never discover unrelated processes.
@@ -1041,6 +1075,7 @@ pub async fn collab_cancel_task(
 /// 读取上次保存的协作画布（节点/连线/视口），用于离开后恢复编排现场。
 #[tauri::command]
 pub async fn collab_load_graph(app_handle: AppHandle) -> Result<Option<serde_json::Value>, String> {
+    ensure_launcher_only()?;
     Ok(collab::load_graph(&app_handle))
 }
 
@@ -1050,6 +1085,7 @@ pub async fn collab_save_graph(
     app_handle: AppHandle,
     graph: serde_json::Value,
 ) -> Result<(), String> {
+    ensure_launcher_only()?;
     collab::save_graph(&app_handle, graph)
 }
 
@@ -1113,6 +1149,7 @@ pub async fn collab_allocate_ports(
 pub async fn collab_list_workflows(
     app_handle: AppHandle,
 ) -> Result<Vec<collab::WorkflowSummary>, String> {
+    ensure_launcher_only()?;
     Ok(collab::list_workflows(&app_handle))
 }
 
@@ -1123,6 +1160,7 @@ pub async fn collab_save_workflow(
     name: String,
     graph: serde_json::Value,
 ) -> Result<collab::WorkflowSummary, String> {
+    ensure_launcher_only()?;
     collab::save_workflow(&app_handle, name, graph)
 }
 
@@ -1132,17 +1170,20 @@ pub async fn collab_load_workflow(
     app_handle: AppHandle,
     id: String,
 ) -> Result<serde_json::Value, String> {
+    ensure_launcher_only()?;
     collab::load_workflow(&app_handle, &id)
 }
 
 /// 删除命名工作流。
 #[tauri::command]
 pub async fn collab_delete_workflow(app_handle: AppHandle, id: String) -> Result<(), String> {
+    ensure_launcher_only()?;
     collab::delete_workflow(&app_handle, &id)
 }
 
 #[tauri::command]
 pub fn stop_instance_window(id: String) -> Result<(), String> {
+    ensure_launcher_update_context()?;
     let mut hosts = instance_hosts()
         .lock()
         .unwrap_or_else(|error| error.into_inner());
@@ -1165,9 +1206,11 @@ pub fn stop_instance_window(id: String) -> Result<(), String> {
         }
     }
     #[cfg(not(windows))]
-    child
-        .kill()
-        .map_err(|error| format!("INSTANCE_HOST_STOP: {error}"))?;
+    {
+        // 只 child.kill() 会留下孤儿 DSH：宿主被 SIGKILL 后无法执行自己的退出
+        // 回收。宿主以 process_group(0) 启动，这里按进程组先 TERM 后 KILL。
+        crate::service::workflow::kill_pid_tree(pid);
+    }
 
     let _ = child.wait();
     hosts.remove(&id);
@@ -1359,7 +1402,8 @@ pub fn get_dsh_status() -> workflow::status::Status {
     workflow::status::get_status()
 }
 
-/// 安装用户提供的插件包规格（npm、git 或本地包路径）。
+/// 安装用户提供的插件包规格（npm 包名、`github:` 规格或受信任的 HTTP(S) 压缩包）。
+/// 本地路径规格（`file:`、`link:`、反斜杠路径）按安全策略拒绝。
 #[tauri::command]
 pub async fn install_plugin_packages(
     app_handle: AppHandle,
@@ -1396,6 +1440,11 @@ pub async fn install_plugin_packages_for_instance(
     config::instance::set_active(Some(target));
     let mut result = Ok(());
     for spec in specs {
+        // 取消只结束当前子进程；不在迭代间检查就会继续安装下一个规格。
+        if plugin::install_was_cancelled() {
+            result = Err("PLUGIN_INSTALL_CANCELLED: plugin installation was stopped".to_string());
+            break;
+        }
         if let Err(error) = plugin::install(&app_handle, &[spec]).await {
             result = Err(error);
             break;
@@ -1429,6 +1478,7 @@ pub async fn install_catalog_plugin_for_instance(
     plugin_name: String,
     source: Option<String>,
 ) -> Result<(), String> {
+    let _runtime_guard = RuntimeUseGuard::acquire()?;
     plugin::reset_cancel();
     let source = source
         .as_deref()
@@ -1501,12 +1551,24 @@ pub async fn install_plugin_pack_for_instance(
     let previous = config::instance::active();
     config::instance::set_active(Some(target));
     let installed = plugin::watch::list(&app_handle);
-    let missing = plugin::pack::missing_plugins(&detail, &installed)?;
+    // 不能用 `?` 提前返回：活动实例已临时切换，任何退出路径都必须先恢复。
+    let missing = match plugin::pack::missing_plugins(&detail, &installed) {
+        Ok(missing) => missing,
+        Err(error) => {
+            config::instance::set_active(previous);
+            return Err(error);
+        }
+    };
     let requested = detail.plugins.len();
     let skipped = requested.saturating_sub(missing.len());
     let total = missing.len();
     let mut result = Ok(());
     for (index, item) in missing.iter().enumerate() {
+        // 取消只结束当前子进程；不在迭代间检查就会继续拉起下一个插件的安装。
+        if plugin::install_was_cancelled() {
+            result = Err("PLUGIN_INSTALL_CANCELLED: plugin installation was stopped".to_string());
+            break;
+        }
         let _ = app_handle.emit(
             "plugin-pack-install-progress",
             PluginPackInstallProgress {
@@ -1759,6 +1821,8 @@ pub async fn update_app_config(
     launcher_blur: Option<bool>,
     confirm_before_instance_removal: Option<bool>,
 ) -> Result<config::Setting, String> {
+    // 全局配置由启动器与所有实例共享，实例宿主不得改写。
+    ensure_launcher_update_context()?;
     let mut setting = config::get_store_dat_setting(&app_handle);
     if let Some(port) = port {
         if port == 0 {
@@ -1937,10 +2001,14 @@ pub async fn read_service_logs(
     let content = std::fs::read_to_string(&log_path).map_err(|e| e.to_string())?;
     let max_bytes = max_bytes.unwrap_or(64 * 1024);
     if content.len() <= max_bytes {
-        Ok(content)
-    } else {
-        Ok(content[content.len() - max_bytes..].to_string())
+        return Ok(content);
     }
+    // 按字节截断可能落在 UTF-8 字符中间，直接切片会 panic；向后回退到字符边界。
+    let mut start = content.len() - max_bytes;
+    while !content.is_char_boundary(start) {
+        start += 1;
+    }
+    Ok(content[start..].to_string())
 }
 
 /// 读取指定实例的启动日志，不依赖当前选中实例。
@@ -2017,6 +2085,13 @@ pub async fn read_run_logs(app_handle: AppHandle) -> Result<String, String> {
 /// 保存界面语言偏好
 #[tauri::command]
 pub fn set_language(app_handle: AppHandle, lang: String) {
+    // 语言是启动器与后续实例共享的全局偏好。调用方是 i18n 检测器的
+    // cacheUserLanguage，属 fire-and-forget，无法处理 rejected promise，
+    // 因此这里保持 () 签名，在非启动器模式下跳过写入而不是返回错误。
+    if ensure_launcher_update_context().is_err() {
+        log::warn!("set_language ignored: global preferences are launcher-only");
+        return;
+    }
     let mut setting = config::get_store_dat_setting(&app_handle);
     setting.language = lang.clone();
     config::set_store_dat_setting(&app_handle, setting);
@@ -2043,6 +2118,7 @@ pub fn get_dsh_theme(app_handle: AppHandle) -> config::DshTheme {
 pub async fn check_desktop_update(
     app_handle: AppHandle,
 ) -> Result<Option<update::DesktopUpdateInfo>, String> {
+    ensure_launcher_update_context()?;
     if DESKTOP_UPDATES_PAUSED {
         log::debug!("Desktop upstream update check skipped: updates are paused for this build");
         return Ok(None);
@@ -2055,6 +2131,7 @@ pub async fn check_desktop_update(
 pub async fn download_desktop_update(
     app_handle: AppHandle,
 ) -> Result<update::DesktopUpdateInfo, String> {
+    ensure_launcher_update_context()?;
     if DESKTOP_UPDATES_PAUSED {
         return Err("DESKTOP_UPDATE_PAUSED: desktop upstream updates are paused".to_string());
     }
@@ -2064,6 +2141,7 @@ pub async fn download_desktop_update(
 /// 打开已下载的桌面端安装包（exe/msi/dmg...，交给系统默认处理器）
 #[tauri::command]
 pub async fn open_desktop_installer(app_handle: AppHandle, path: String) -> Result<(), String> {
+    ensure_launcher_update_context()?;
     update::open_installer(&app_handle, path).await
 }
 

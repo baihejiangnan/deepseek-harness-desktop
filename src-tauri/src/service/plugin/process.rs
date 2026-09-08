@@ -87,6 +87,8 @@ pub(crate) async fn run_plugin_process(
 
     #[cfg(not(windows))]
     {
+        use std::os::unix::process::CommandExt;
+
         let mut child = Command::new(node)
             .args(args)
             .envs(envs)
@@ -94,6 +96,8 @@ pub(crate) async fn run_plugin_process(
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            // 自成进程组，取消时才能用负 PID 结束整棵树而不波及启动器。
+            .process_group(0)
             .spawn()
             .map_err(|e| format!("PLUGIN_INSTALL_SPAWN: {e}"))?;
 
@@ -106,11 +110,14 @@ pub(crate) async fn run_plugin_process(
             .take()
             .map(|stderr| spawn_line_emitter(stderr, window.clone(), captured.clone()));
 
+        super::cancel::track_child(child.id());
         let exit_code = tauri::async_runtime::spawn_blocking(move || {
             child.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1)
         })
         .await
-        .map_err(|e| format!("PLUGIN_INSTALL_WAIT: {e}"))?;
+        .map_err(|e| format!("PLUGIN_INSTALL_WAIT: {e}"));
+        super::cancel::untrack_child();
+        let exit_code = exit_code?;
 
         if let (Some(stdout_reader), Some(stderr_reader)) = (stdout_reader, stderr_reader) {
             wait_for_readers(stdout_reader, stderr_reader).await?;

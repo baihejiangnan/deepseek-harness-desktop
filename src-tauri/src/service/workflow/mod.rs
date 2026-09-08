@@ -269,7 +269,7 @@ fn terminate_owned_process() {
 
 /// 结束进程树（Windows `taskkill /PID <pid> /T /F`；Unix 负 PID 进程组，与
 /// 启动时 `process_group(0)` 对应）。调用方需先确认 PID 确实指向目标进程。
-fn kill_pid_tree(pid: u32) {
+pub(crate) fn kill_pid_tree(pid: u32) {
     #[cfg(windows)]
     {
         let mut cmd = Command::new("taskkill");
@@ -376,13 +376,80 @@ pub fn terminate_stale_harness_processes(app_handle: &tauri::AppHandle) {
 // 孤儿 Harness 清扫：崩溃/强杀残留实例的识别与回收（issue #34 关联现象）
 // ---------------------------------------------------------------------------
 
+const HARNESS_PID_FILE: &str = ".harness.pid";
+
 /// 孤儿清扫用的 PID/端口标记文件路径（$DSH_HOME/.harness.pid，两行：PID、端口）。
 ///
 /// 应用被强杀（崩溃、任务管理器结束等）时无法执行退出清理，其 Harness 子进程
 /// 会继续占用端口；下一次启动只能一路漂移端口（3080→3081→…）并触发服务端
 /// "already running"，表现为应用"坏掉"。启动前据此文件识别并清理这类残留。
 fn harness_pid_path(app_handle: &tauri::AppHandle) -> std::path::PathBuf {
-    config::get_dsh_data_path(app_handle).join(".harness.pid")
+    home_harness_marker_path(&config::get_dsh_data_path(app_handle))
+}
+
+/// 指定 Home 下的 PID/端口标记路径。删除 Home 前的守卫要按实例 Home 取标记，
+/// 不能复用只指向当前活动 Home 的 `harness_pid_path`。
+pub fn home_harness_marker_path(home: &std::path::Path) -> std::path::PathBuf {
+    home.join(HARNESS_PID_FILE)
+}
+
+/// 解析指定 Home 的标记内容，返回 (PID, 端口)。标记缺失或不可解析时为 None。
+pub fn read_home_service_marker(home: &std::path::Path) -> Option<(u32, u16)> {
+    let text = fs::read_to_string(home_harness_marker_path(home)).ok()?;
+    let mut lines = text.lines();
+    let pid = lines.next()?.trim().parse::<u32>().ok()?;
+    let port = lines.next()?.trim().parse::<u16>().ok()?;
+    Some((pid, port))
+}
+
+/// 进程是否存活。Windows 以 OpenProcess 句柄判定，拒绝访问说明进程存在只是权限
+/// 不足；Unix 以 `kill -0` 判定。探测失败按不存活处理，调用方自行决定保守策略。
+fn is_pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED};
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return std::io::Error::last_os_error().raw_os_error()
+                    == Some(ERROR_ACCESS_DENIED as i32);
+            }
+            let _ = CloseHandle(handle);
+            true
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        Command::new("kill")
+            .args(["-0", "--", &pid.to_string()])
+            .output()
+            .is_ok_and(|output| output.status.success())
+    }
+}
+
+/// 删除 Home 前的最终守卫：该 Home 是否仍有存活的 DSH 服务，返回其 PID。
+///
+/// 只看磁盘标记与进程活性，不看本进程的宿主表——启动器崩溃或被强杀后，遗留的
+/// 宿主与 DSH 子进程在 `INSTANCE_HOSTS` 中不可见，却仍在写这个 Home。PID 复用的
+/// 极端情况会误判为存活，代价是拒绝删除，而不是删掉正在使用的用户数据。
+pub fn home_service_is_live(home: &std::path::Path) -> Option<u32> {
+    let (pid, port) = read_home_service_marker(home)?;
+    if !is_pid_alive(pid) {
+        log::debug!(
+            "stale harness marker under {}: pid {pid} (port {port}) is no longer alive",
+            home.display()
+        );
+        return None;
+    }
+    Some(pid)
 }
 
 /// 记录本次启动的 Harness PID 与端口，供下次启动清扫孤儿用。
@@ -396,6 +463,7 @@ fn persist_harness_pid(app_handle: &tauri::AppHandle, pid: u32, port: u16) {
 
 /// 启动前清扫上次崩溃残留的孤儿 Harness。端口与 PID 双重确认后才动手：
 /// - 标记进程已死 → 仅清理陈旧标记；
+/// - 端口空闲但标记进程仍存活 → 保留标记不动；
 /// - 端口占用者正是标记中的 PID → 本应用残留，结束其进程树并清标记；
 /// - 其余情况（标记不可解析、端口被其他程序占用、无法探测占用者）一律不动，
 ///   绝不凭端口猜进程、绝不杀未知进程。
@@ -419,7 +487,13 @@ pub fn sweep_orphan_harness(app_handle: &tauri::AppHandle) {
         return;
     };
     if !is_port_in_use(port) {
-        // 端口已释放：残留实例早已自行退出，仅清理标记
+        // 端口空闲不等于进程已退出：可能崩溃在监听之前、或标记里的端口本就失真。
+        // 同一份标记还是删除 Home 前 home_service_is_live 的唯一依据，这里凭端口
+        // 把它删掉，等于每次启动都提前抹掉守卫的证据。没有端口要回收时保留即可。
+        if is_pid_alive(pid) {
+            return;
+        }
+        // 端口已释放且标记进程已确认退出：残留实例早已自行退出，仅清理标记
         let _ = fs::remove_file(&pid_file);
         return;
     }

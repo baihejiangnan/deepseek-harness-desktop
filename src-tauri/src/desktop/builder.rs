@@ -123,7 +123,9 @@ pub fn tray(app: &tauri::AppHandle<Wry>) -> tauri::Result<()> {
         .menu(&menu)
         .on_menu_event(|app, event| {
             if event.id.as_ref() == "native-quit" {
-                crate::bridge::cmd::quit_app(app.clone());
+                if let Err(error) = crate::bridge::cmd::quit_app(app.clone()) {
+                    log::error!("native quit refused: {error}");
+                }
             } else if let Some(id) = event.id.as_ref().strip_prefix("native-instance:") {
                 let id = id.to_string();
                 let app = app.clone();

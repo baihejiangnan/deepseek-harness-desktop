@@ -101,7 +101,10 @@ export default function TrayPanel() {
   }
 
   async function quit() {
-    await invoke('quit_app')
+    // 后端在实例宿主模式会明确拒绝退出；这里只避免出现未处理的 rejection。
+    await invoke('quit_app').catch((cause) => {
+      console.warn('[Tray] quit refused:', cause)
+    })
   }
 
   async function focusInstance(instance: DshInstance) {

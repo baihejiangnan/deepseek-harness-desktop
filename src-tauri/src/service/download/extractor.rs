@@ -162,16 +162,16 @@ pub fn extract_tgz<'a, R: Runtime>(
         })?;
 
         // 打印当前解压的文件名（格式：Extract 路径/文件）
-        // -1.0 表示未知进度(让前端持续增加)
+        // -1.0 表示本阶段总量不可测量：TGZ 无法预知文件总数，不编造百分比，
+        // 只报已解压的真实文件数。
         let relative_path = path.to_string_lossy().replace('\\', "/");
-        // 对于 TGZ，由于无法提前知道文件总数，使用文件计数来估算进度
-        let estimated_pct = (file_count as f64 / (file_count + 1) as f64) * 100.0;
         tracker.update(
             -1.0,
             format!(
-                "{} {:.1}%",
-                crate::config::i18n::t("install.extracted"),
-                estimated_pct
+                "{} {} {}",
+                crate::config::i18n::t("install.extracting"),
+                file_count,
+                crate::config::i18n::t("install.files")
             ),
             format!("Extract {}", relative_path),
         );

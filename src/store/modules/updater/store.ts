@@ -25,6 +25,8 @@ export const updater = defineStore({
     progress: 0,
     phaseTitle: '',
     phaseDetail: '',
+    /** 后端 progress 为 -1 表示本阶段总量不可测量，此时不展示确定百分比 */
+    indeterminate: false,
   }),
   actions: {
     /** 后台静默检查是否有新版 Harness（网络失败/API 限流时静默跳过） */
@@ -122,12 +124,15 @@ export const updater = defineStore({
 
       this.updating = true
       this.progress = 0
+      this.indeterminate = false
       this.phaseTitle = i18next.t('update.dsh_updating')
       this.phaseDetail = ''
       let unlistenInstall: UnlistenFn | null = null
       try {
         unlistenInstall = await listen<InstallProgress>('install-progress', (event) => {
           const payload = event.payload
+          // progress 为 -1 表示本阶段总量不可测量（如 TGZ 解压），转不确定态。
+          this.indeterminate = payload.progress < 0
           this.progress = Math.max(this.progress, Math.min(100, payload.percentage))
           this.phaseTitle = payload.title || this.phaseTitle
           this.phaseDetail = payload.detail || payload.log || this.phaseDetail
@@ -135,8 +140,9 @@ export const updater = defineStore({
 
         const changed = await invoke<boolean>('update_active_dsh_runtime')
         if (!changed) {
-          this.progress = 100
-          toast(i18next.t('update.dsh_verify_failed'), { variant: 'danger', placement: 'bottom end' })
+          // 契约里 false 表示本次没有落盘更新（已是最新、仅修正记录，或限流拿不到
+          // 可信摘要），不是失败。保留 updateInfo，提示用户稍后重试。
+          toast(i18next.t('update.dsh_update_deferred'), { variant: 'warning', placement: 'bottom end' })
           return
         }
 
@@ -159,6 +165,7 @@ export const updater = defineStore({
           await new Promise(resolve => setTimeout(resolve, 450))
         this.updating = false
         this.progress = 0
+        this.indeterminate = false
         this.phaseTitle = ''
         this.phaseDetail = ''
       }
