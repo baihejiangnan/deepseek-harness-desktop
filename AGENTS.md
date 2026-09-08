@@ -2,6 +2,18 @@
 
 本仓库是 DSH Launcher（Deepseek Harness Desktop）的启动器开发分支。它管理多个 DSH 实例、DSH 运行时、插件生态、更新和 Windows 桌面集成；实例窗口直接承载 DSH 原生 Web。本文是仓库级开发约束，代码、产品行为与本文冲突时应先核实当前实现和最新用户决策，不得凭旧方案覆盖现状。
 
+## 文档导航与维护
+
+- [README](README.md)：项目介绍、下载和快速开始；不另建重复的 project-overview。
+- [用户指南](docs/USER_GUIDE.md)：面向使用者的操作和故障处理。
+- [架构与数据流](docs/ARCHITECTURE.md)：进程、运行时、数据归属和协作边界。
+- [Tauri 接口契约](docs/IPC_CONTRACTS.md)：关键 command、事件载荷、错误码与实例绑定；不重复普通组件 Props。
+- [视觉规范](docs/DESIGN.md)：主题、布局、交互状态和视觉回归。
+- [开发说明](docs/DEVELOPMENT.zh.md) / [English](docs/DEVELOPMENT.md)：环境、命令和回归清单。
+- [发布检查](docs/RELEASING.md)、[当前待办](TODO.md)、[附属清理方案](docs/INSTANCE_CLEANUP_PLAN.md)。
+
+本文保留强制约束，详细说明由对应文档维护。行为/协议/数据流变化时同步相关文档；待办标明待实现、待验证与验收条件，不把过程记录或旧交接当作完成证据。
+
 ## 首要原则
 
 - 保持启动器、实例宿主和 DSH 原生 Web 三层解耦。

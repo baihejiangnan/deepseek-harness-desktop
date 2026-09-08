@@ -144,7 +144,17 @@ The launcher only *manages*; it never touches DSH core: no rewriting of DSH's we
 
 No manual Node.js or DSH installation is required. When you launch an instance for the first time, the launcher detects what is missing and downloads it over the network; compatible runtimes already on your machine are reused first.
 
-> The primary build target is Windows x64; macOS / Linux bundles must be built on their respective platforms.
+> Releases provide Windows, macOS and Linux builds. Windows is the primary desktop validation platform; successful macOS / Linux builds do not imply complete manual runtime verification.
+
+See the [user guide (Chinese)](docs/USER_GUIDE.md) for first-run setup, plugins, collaboration, backups and troubleshooting.
+
+## Project documentation
+
+- [Architecture and data flow](docs/ARCHITECTURE.md) · [Tauri IPC contracts](docs/IPC_CONTRACTS.md)
+- [Design rules](docs/DESIGN.md) · [Development](docs/DEVELOPMENT.md) · [Release checklist](docs/RELEASING.md)
+- [Agent instructions](AGENTS.md) · [Current tasks and limitations](TODO.md)
+
+Most detailed product and architecture documents are currently maintained in Chinese; the development guide is bilingual.
 
 ## Build from source
 

@@ -1,14 +1,14 @@
 # 开发
 
-DeepSeek Harness Desktop 是 **Tauri 2 + React 19** 应用：前端位于 `src/`，Rust 后端位于 `src-tauri/`。
+DSH Launcher 是 **Tauri 2 + React 19** 应用：启动器前端位于 `src/`，Rust 后端位于 `src-tauri/`；实例窗口直接承载 DSH 原生 Web。开始前阅读 [AGENTS.md](../AGENTS.md)、[架构](ARCHITECTURE.md) 和 [接口契约](IPC_CONTRACTS.md)。[English](DEVELOPMENT.md)。
 
 ## 环境要求
 
 | 工具 | 版本 |
 | --- | --- |
-| Node.js | 20.19+ 或 22.12+（Vite 7 engines 要求） |
-| Rust | 1.77.2+ |
-| pnpm | 9+ |
+| Node.js | 开发建议 22.22.x，与管理运行时版本对齐；升级时检查锁定依赖的 engines |
+| Rust | 使用能通过当前 Cargo.lock 的 stable 工具链；仓库没有声明已验证的最低 Rust 版本 |
+| pnpm | 开发使用 10.x，与发布 CI 一致；不是运行时插件安装使用的 pnpm 版本 |
 
 以及平台编译工具链：
 
@@ -22,6 +22,8 @@ DeepSeek Harness Desktop 是 **Tauri 2 + React 19** 应用：前端位于 `src/`
 pnpm install      # 安装依赖
 pnpm dev          # 前端开发服务器（Vite）
 pnpm typecheck    # 前端 TypeScript 检查
+pnpm lint         # 全仓库 lint；脏工作区优先对修改文件执行 eslint
+pnpm build        # TypeScript + Vite 生产构建
 pnpm tauri dev    # 调试模式运行桌面端
 pnpm tauri build  # 构建安装包
 ```
@@ -37,3 +39,55 @@ cargo test
 
 - Harness 默认起始端口：正式版 **3080**、调试版 **3081**；启动时会探测可用端口，实际监听端口以实例运行状态为准。
 - 前端开发服务器是 Vite 的 **1420** 端口（`vite.config.ts`、`tauri.conf.json` 的 `devUrl`）；设置 `TAURI_DEV_HOST` 时 HMR 使用 **1421**。
+
+## 接手与启动
+
+先检查分支、HEAD、工作区和相关 diff。不要重置、批量格式化或清理别人的改动。普通搜索排除实例 Home、凭据、会话和无关 AppData。
+
+`pnpm tauri dev` 会启动前端开发服务；不要额外再开一个占用 1420 的 Vite。终止旧服务前核对命令行确实属于本仓库，先结束父进程再核查子进程与端口，不能批量结束所有 Node。不要用失效客户端的 SYN_SENT 判断服务仍在监听。
+
+前端可热更新；Rust command、进程、窗口、托盘或安装流程修改后，重新编译并重启 Tauri 再验收。不要把旧窗口行为当作新后端的测试结果。
+
+## 按改动选择验证
+
+| 改动 | 最少验证 |
+| --- | --- |
+| 纯文档 | 链接、示例命令/字段与源码一致性、git diff --check |
+| 前端 | pnpm typecheck、修改文件 ESLint |
+| 共享布局、构建配置 | 上述检查加 pnpm build，相关页面手动验收 |
+| Rust | cargo check、受影响模块定向测试 |
+| 高风险跨模块 | cargo test，以及涉及生命周期/数据写入的手动回归 |
+
+示例（根目录执行前端检查；后端命令在 src-tauri 下执行）：
+
+```bash
+pnpm exec eslint src/components/instance-manager.tsx src/store/modules/launcher/store.ts
+git diff --check
+git diff --stat
+```
+
+在 src-tauri 目录运行定向测试：
+
+```bash
+cargo test service::download::core::tests
+cargo test config::instance::tests
+cargo test service::plugin::install::tests
+```
+
+只格式化本次 Rust 文件，不因既有格式差异对整个工作区运行改写命令。测试报告注明运行环境、通过项和未验证项；编译成功不代表首次安装或跨平台窗口行为通过。
+
+## 手动回归清单
+
+- 首启：用隔离的测试环境验证没有 Node/DSH、已有兼容环境、网络中断、摘要/解压失败和直接重试。不得删除真实用户运行时或 Home 来制造场景。
+- 多实例：不同 Home 并行、共享 Home 互斥；窗口/任务栏独立；关闭实例不退出启动器；启动器成功后最小化、失败保持可见。
+- 插件：目标 Profile、逐项进度、取消与进程树、日志复制和截断说明；手动安装的本地路径规格被拒；pnpm 输出被污染时不写入非法 `allowBuilds` 键。
+- 数据：临时 Home 上验证仅移除记录、删除共享 Home 的影响、导出目标在 Home 外、备份和失败反馈；启动器外遗留的 DSH 进程仍占用 Home 时删除被拒绝；重启启动器不会删掉仍存活进程的 `.harness.pid`（清扫只在进程确认已死时清理标记，否则守卫失去依据）；`instances.json` 损坏后能从 `.bak` 恢复；单条 Home 不可用时其余实例仍可加载。
+- 更新：停止相关实例；切换失败可恢复；Home、凭据、会话不被更新流程覆盖。
+- 协作：依赖顺序、实际产物、节点实例绑定、契约写入失败、部分启动失败、取消和主代理保留现场。
+- UI：主题、窄窗口、中英文、禁用/错误/空态、键盘和 reduced-motion，见 [视觉规范](DESIGN.md)。
+
+## 文档与发布
+
+当前任务见 [TODO](../TODO.md)。长期规范进入项目文档；过程日志、截图和临时验收材料不默认提交。提交使用明确路径并检查暂存差异，不把 output、实例数据或构建缓存一起加入。
+
+发布必须另按 [RELEASING.md](RELEASING.md) 操作。源码 push、tag、构建和资产发布分别核验；文档更新本身不触发版本升级或发布。

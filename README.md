@@ -140,7 +140,15 @@ DSH 会把一切写进 `DSH_HOME`：
 
 无需手动安装 Node.js 或 DSH。首次启动实例时，启动器会自动检测并联网下载缺少的运行环境；已有兼容环境会优先复用。
 
-> 当前主构建目标为 Windows x64；macOS / Linux 发行包需在对应平台自行构建。
+> Release 同时提供 Windows、macOS 和 Linux 构建包。当前主要桌面验收平台为 Windows；macOS / Linux 构建成功不代表已完成所有真机功能验证。
+
+首次安装、插件、协作、备份和故障处理见 [使用指南](docs/USER_GUIDE.md)。
+
+## 项目文档
+
+- [架构与数据流](docs/ARCHITECTURE.md) · [Tauri 接口契约](docs/IPC_CONTRACTS.md)
+- [视觉规范](docs/DESIGN.md) · [开发说明](docs/DEVELOPMENT.zh.md) · [发布检查](docs/RELEASING.md)
+- [AI 开发约束](AGENTS.md) · [当前待办与已知限制](TODO.md)
 
 ## 从源码构建
 
