@@ -3,6 +3,8 @@ import { Button, ListBox, Select } from '@heroui/react'
 import { invoke } from '@tauri-apps/api/core'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { saveStatusLabel, useSaveStatus } from '@/utils/save-status'
+import { ErrorBanner, PageHeader, StatusBadge } from './launcher-ui'
 import ProviderTemplates from './provider-templates'
 
 interface PersonalizationConfig {
@@ -48,21 +50,37 @@ export default function PersonalizationPanel() {
   const [blur, setBlur] = useState(false)
   const [confirmBeforeRemoval, setConfirmBeforeRemoval] = useState(true)
   const [language, setLanguage] = useState<'zh-CN' | 'en-US'>('zh-CN')
-  const [saved, setSaved] = useState(false)
+  const save = useSaveStatus()
 
-  useEffect(() => {
-    void invoke<PersonalizationConfig>('get_app_config').then((config) => {
+  const [configError, setConfigError] = useState('')
+
+  async function load() {
+    try {
+      const config = await invoke<PersonalizationConfig>('get_app_config')
       setLanguage(config.language?.startsWith('en') ? 'en-US' : 'zh-CN')
       setOpacity(config.launcher_opacity ?? 100)
       setStartupMode(config.startup_mode ?? 'manager')
       setTheme(config.launcher_theme ?? 'mist-blue-sakura-pink')
       setBlur(config.launcher_blur ?? false)
       setConfirmBeforeRemoval(config.confirm_before_instance_removal ?? true)
-    }).catch(() => {})
+      setConfigError('')
+    }
+    catch (cause) {
+      // 读失败不能接着让人保存：update_app_config 一次带走全部字段，
+      // 而此刻表单里是默认值，写下去会把用户真正的设置静默改回默认。
+      setConfigError(String(cause))
+    }
+  }
+
+  useEffect(() => {
+    void load()
   }, [])
 
-  async function saveConfig(values: Partial<PersonalizationConfig>) {
-    try {
+  function saveConfig(values: Partial<PersonalizationConfig>) {
+    if (configError !== '')
+      return
+    // 失败已由 save 在页面上驻留展示；这里的 catch 只是避免未处理的 Promise 拒绝，不是吞掉反馈。
+    void save.run(async () => {
       await invoke('update_app_config', {
         launcherOpacity: values.launcher_opacity,
         startupMode: values.startup_mode,
@@ -71,12 +89,7 @@ export default function PersonalizationPanel() {
         confirmBeforeInstanceRemoval: values.confirm_before_instance_removal,
       })
       window.dispatchEvent(new Event('launcher-appearance-updated'))
-      setSaved(true)
-      window.setTimeout(setSaved, 1800, false)
-    }
-    catch {
-      // The control remains usable; the next change can retry persistence.
-    }
+    }).catch(() => {})
   }
 
   function changeOpacity(value: number) {
@@ -109,6 +122,10 @@ export default function PersonalizationPanel() {
     void i18n.changeLanguage(value)
   }
 
+  // 本页所有字段都是改动即写盘，因此只汇报状态、不提供"保存"按钮。
+  const saveLabel = saveStatusLabel(save, { saving: t('ui.saving'), saved: t('launcher.personalization.saved'), failed: t('messages.save_failed') })
+  const saveTone = save.phase === 'failed' ? 'danger' : save.phase === 'saved' ? 'success' : 'neutral'
+
   return (
     <div className="flex min-h-0 min-w-0 flex-1 bg-[var(--launcher-canvas)] text-[var(--launcher-ink)]">
       <nav className="w-[210px] flex-none border-r border-[var(--launcher-border)] bg-[var(--launcher-sidebar)] p-3" aria-label={t('launcher.nav.settings')}>
@@ -135,14 +152,25 @@ export default function PersonalizationPanel() {
       </nav>
       <main className="min-h-0 min-w-0 flex-1 overflow-y-auto px-8 py-7">
         <div key={section} className="launcher-content-enter mx-auto max-w-[900px]">
-          <div className="mb-7">
-            <div className="mb-2 text-xs font-semibold text-[var(--launcher-brand)]">{t('launcher.personalization.eyebrow')}</div>
-            <h1 className="m-0 text-2xl font-semibold">{t(`launcher.personalization.${section}_title`)}</h1>
-            <p className="mt-2 text-sm text-[var(--launcher-muted)]">{t(`launcher.personalization.${section}_description`)}</p>
-          </div>
+          <PageHeader
+            title={t(`launcher.personalization.${section}_title`)}
+            description={t(`launcher.personalization.${section}_description`)}
+            status={section === 'providers' || saveLabel == null ? undefined : <StatusBadge tone={saveTone}>{saveLabel}</StatusBadge>}
+          />
+          {save.phase === 'failed' && section !== 'providers' && (
+            <ErrorBanner className="mb-5" message={t('messages.save_failed')} detail={save.error} />
+          )}
+          {configError !== '' && section !== 'providers' && (
+            <ErrorBanner
+              className="mb-5"
+              message={t('launcher.personalization.load_failed')}
+              detail={configError}
+              action={<Button size="sm" variant="outline" onPress={() => { void load() }}>{t('buttons.retry')}</Button>}
+            />
+          )}
 
           {section === 'providers' && <ProviderTemplates />}
-          {section === 'personalization' && (
+          {configError === '' && section === 'personalization' && (
             <section className="rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)] p-6">
               <h2 className="m-0 text-sm font-semibold">{t('launcher.personalization.appearance')}</h2>
               <div className="mt-5">
@@ -154,18 +182,14 @@ export default function PersonalizationPanel() {
                       type="button"
                       role="radio"
                       aria-checked={theme === item.id}
-                      aria-pressed={theme === item.id}
-                      className="group inline-flex h-8 items-center gap-2 rounded px-1 text-left text-xs text-[var(--launcher-ink)] outline-none transition-colors hover:text-[var(--launcher-brand-strong)] focus-visible:ring-2 focus-visible:ring-[var(--launcher-brand)]/35"
+                      className={`group inline-flex h-8 items-center gap-2 rounded px-1 text-left text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--launcher-brand)]/35 motion-reduce:transition-none ${theme === item.id ? 'font-semibold text-[var(--launcher-brand-strong)]' : 'font-normal text-[var(--launcher-ink)] hover:text-[var(--launcher-brand-strong)]'}`}
                       onClick={() => changeTheme(item.id)}
                     >
                       <span
-                        className="size-[18px] flex-none rounded-full border-2 transition-transform group-hover:scale-110"
-                        style={{
-                          backgroundColor: theme === item.id ? item.colors[0] : 'transparent',
-                          borderColor: item.colors[0],
-                        }}
+                        className={`h-6 w-14 flex-none rounded-md ${theme === item.id ? 'ring-2 ring-[var(--launcher-brand)] ring-offset-2 ring-offset-[var(--launcher-surface)]' : 'ring-1 ring-[var(--launcher-border)]'}`}
+                        style={{ background: `linear-gradient(110deg, ${item.colors[0]}, ${item.colors[1]} 54%, ${item.colors[2]})` }}
                       />
-                      <span className={theme === item.id ? 'font-semibold' : 'font-normal'}>{t(`launcher.personalization.theme.${item.nameKey}`)}</span>
+                      <span>{t(`launcher.personalization.theme.${item.nameKey}`)}</span>
                     </button>
                   ))}
                 </div>
@@ -201,7 +225,7 @@ export default function PersonalizationPanel() {
             </section>
           )}
 
-          {section === 'settings' && (
+          {configError === '' && section === 'settings' && (
             <section className="rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)] p-6">
               <h2 className="m-0 text-sm font-semibold">{t('launcher.personalization.startup')}</h2>
               <p className="mt-2 text-xs leading-5 text-[var(--launcher-muted)]">{t('launcher.personalization.startup_hint')}</p>
@@ -263,12 +287,6 @@ export default function PersonalizationPanel() {
             </section>
           )}
 
-          {section !== 'providers' && (
-            <div className="mt-4 flex items-center justify-end gap-3 text-xs text-[var(--launcher-muted)]">
-              {saved && <span>{t('launcher.personalization.saved')}</span>}
-              <Button className="h-8 rounded-md" variant="ghost" onPress={() => { void saveConfig({ launcher_opacity: opacity, startup_mode: startupMode }) }}>{t('launcher.personalization.save')}</Button>
-            </div>
-          )}
         </div>
       </main>
     </div>

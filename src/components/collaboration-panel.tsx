@@ -147,7 +147,7 @@ function SelectField({ className = '', children, ...props }: React.SelectHTMLAtt
     <div className={`relative inline-flex ${className}`}>
       <select
         {...props}
-        className="h-[30px] w-full cursor-pointer appearance-none rounded-md border border-[var(--launcher-border)] bg-white/80 pl-2.5 pr-7 text-xs text-[var(--launcher-ink)] outline-none transition-colors hover:border-[var(--launcher-brand)] focus:border-[var(--launcher-brand)]"
+        className="h-[30px] w-full cursor-pointer appearance-none rounded-md border border-[var(--launcher-border)] bg-white/80 pl-2.5 pr-7 text-xs text-[var(--launcher-ink)] outline-none transition-colors motion-reduce:transition-none hover:border-[var(--launcher-brand)] focus:border-[var(--launcher-brand)]"
       >
         {children}
       </select>
@@ -388,6 +388,8 @@ export default function CollaborationPanel() {
     scheduleSave()
   }
 
+  const graphSaveFailedRef = useRef(false)
+
   async function persistGraph() {
     try {
       await invoke('collab_save_graph', {
@@ -401,9 +403,14 @@ export default function CollaborationPanel() {
           zoomRef.current,
         ),
       })
+      graphSaveFailedRef.current = false
     }
-    catch {
-      // 持久化失败不阻塞编排，下一次变更会再次尝试
+    catch (error) {
+      // 持久化失败不阻塞编排，下一次变更会再次尝试；但未落盘必须可见，且只提示一次避免刷屏。
+      if (!graphSaveFailedRef.current) {
+        graphSaveFailedRef.current = true
+        toast(t('launcher.collaboration.graph_save_failed'), { variant: 'danger', description: String(error) })
+      }
     }
   }
 
@@ -1400,14 +1407,13 @@ export default function CollaborationPanel() {
 
   return (
     <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-[var(--launcher-canvas)]">
-      <header className="flex-none border-b border-[var(--launcher-border)] bg-[var(--launcher-surface)] px-5 py-3 md:px-7">
-        <div className="flex min-h-8 items-center justify-between gap-5">
+      <header className="flex-none border-b border-[var(--launcher-border)] bg-[var(--launcher-surface)] px-5 py-4 md:px-7">
+        <div className="flex min-h-8 flex-col items-stretch gap-3">
           <div className="flex min-w-0 items-center gap-3">
-            <span className="hidden flex-none text-[11px] font-semibold uppercase tracking-wide text-[var(--launcher-brand)] sm:inline">{t('launcher.collaboration.eyebrow')}</span>
-            <h1 className="m-0 flex-none text-xl font-semibold">{t('launcher.collaboration.title')}</h1>
-            <span className="hidden min-w-0 truncate text-xs text-[var(--launcher-muted)] lg:block">{t('launcher.collaboration.description')}</span>
+            <h1 className="m-0 flex-none text-[22px] font-semibold tracking-[-0.015em]">{t('launcher.collaboration.title')}</h1>
+            <span className="hidden min-w-0 text-sm text-[var(--launcher-muted)] md:block">{t('launcher.collaboration.description')}</span>
           </div>
-          <div className="flex flex-none items-center gap-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             <SelectField
               aria-label={t('launcher.collaboration.jump_to_node')}
               value=""
@@ -1432,7 +1438,7 @@ export default function CollaborationPanel() {
               type="button"
               disabled={nodes.length === 0}
               title={runState === 'running' ? t('launcher.collaboration.clear_blocked') : confirmClear ? t('launcher.collaboration.clear_canvas_confirm') : t('launcher.collaboration.clear_canvas')}
-              className={`flex flex-none items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${confirmClear ? 'border-danger/50 bg-danger/10 text-danger' : 'border-[var(--launcher-border)] bg-white/70 text-[var(--launcher-ink)] hover:bg-white'}`}
+              className={`flex flex-none items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs transition-colors motion-reduce:transition-none disabled:cursor-not-allowed disabled:opacity-40 ${confirmClear ? 'border-danger/50 bg-danger/10 text-danger' : 'border-[var(--launcher-border)] bg-white/70 text-[var(--launcher-ink)] hover:bg-white'}`}
               onClick={clearCanvas}
             >
               <TrashBin className="size-3.5" />
@@ -1500,7 +1506,7 @@ export default function CollaborationPanel() {
             <button
               type="button"
               title={t('launcher.collaboration.run_hint')}
-              className={`flex flex-none items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${runState === 'running' ? 'border border-[var(--launcher-border)] bg-white/70 hover:bg-white' : 'bg-[var(--launcher-brand)] text-white hover:bg-[var(--launcher-brand-strong)]'}`}
+              className={`flex flex-none items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors motion-reduce:transition-none ${runState === 'running' ? 'border border-[var(--launcher-border)] bg-white/70 hover:bg-white' : 'bg-[var(--launcher-brand)] text-[var(--launcher-on-brand)] hover:bg-[var(--launcher-brand-strong)]'}`}
               onClick={runState === 'running' ? stopRun : startRun}
             >
               {runState === 'running' ? <CircleStopFill className="size-4" /> : <CirclePlayFill className="size-4" />}
@@ -1543,7 +1549,7 @@ export default function CollaborationPanel() {
                     key={instance.id}
                     draggable={!selectedIds.has(instance.id)}
                     title={selectedIds.has(instance.id) ? t('launcher.collaboration.already_added') : t('launcher.collaboration.drag_hint')}
-                    className={`flex h-[54px] min-w-[146px] flex-none cursor-grab flex-col justify-between rounded-md border px-3 py-2 text-left transition-colors active:cursor-grabbing ${selectedIds.has(instance.id) ? 'border-[var(--launcher-brand)]/35 bg-[var(--launcher-selected)]/60 opacity-70' : 'border-[var(--launcher-border)] bg-white/70 hover:border-[var(--launcher-brand)] hover:bg-white'}`}
+                    className={`flex h-[54px] min-w-[146px] flex-none cursor-grab flex-col justify-between rounded-md border px-3 py-2 text-left transition-colors motion-reduce:transition-none active:cursor-grabbing ${selectedIds.has(instance.id) ? 'border-[var(--launcher-brand)]/35 bg-[var(--launcher-selected)]/60 opacity-70' : 'border-[var(--launcher-border)] bg-white/70 hover:border-[var(--launcher-brand)] hover:bg-white'}`}
                     onDragStart={(event) => {
                       event.dataTransfer.effectAllowed = 'copy'
                       event.dataTransfer.setData('application/x-dsh-instance', instance.id)
@@ -1567,7 +1573,7 @@ export default function CollaborationPanel() {
       <div className="flex min-h-0 flex-1">
         <nav
           aria-label={t('launcher.collaboration.subnav_label')}
-          className={`flex-none border-r border-[var(--launcher-border)] bg-[var(--launcher-sidebar)] transition-[width] duration-200 ${workflowNavOpen ? 'w-[176px]' : 'w-[44px]'}`}
+          className={`flex-none border-r border-[var(--launcher-border)] bg-[var(--launcher-sidebar)] transition-[width] motion-reduce:transition-none duration-200 ${workflowNavOpen ? 'w-[176px]' : 'w-[44px]'}`}
         >
           <div className="flex h-full flex-col items-stretch gap-1 p-1.5">
             <button
@@ -1683,7 +1689,7 @@ export default function CollaborationPanel() {
                         type="button"
                         data-node-handle="target"
                         aria-label={t('launcher.collaboration.connect_target', { name: instance?.name ?? '' })}
-                        className={`absolute -top-2 left-1/2 grid size-4 -translate-x-1/2 place-items-center rounded-full border border-[var(--launcher-brand)] bg-[var(--launcher-surface)] text-[var(--launcher-brand)] transition-opacity hover:opacity-100 focus:opacity-100 ${isSelected || connectingFrom ? 'opacity-100' : 'opacity-0'}`}
+                        className={`absolute -top-2 left-1/2 grid size-4 -translate-x-1/2 place-items-center rounded-full border border-[var(--launcher-brand)] bg-[var(--launcher-surface)] text-[var(--launcher-brand)] transition-opacity motion-reduce:transition-none hover:opacity-100 focus:opacity-100 ${isSelected || connectingFrom ? 'opacity-100' : 'opacity-0'}`}
                         onPointerUp={(event) => {
                           event.stopPropagation()
                           connectToNode(node.id)
@@ -1704,7 +1710,7 @@ export default function CollaborationPanel() {
                         type="button"
                         data-node-handle="source"
                         aria-label={t('launcher.collaboration.connect_source', { name: instance?.name ?? '' })}
-                        className={`absolute -bottom-2 left-1/2 grid size-4 -translate-x-1/2 place-items-center rounded-full border border-[var(--launcher-brand)] bg-[var(--launcher-surface)] text-[var(--launcher-brand)] transition-opacity hover:opacity-100 focus:opacity-100 ${isSelected ? 'opacity-100' : 'opacity-0'}`}
+                        className={`absolute -bottom-2 left-1/2 grid size-4 -translate-x-1/2 place-items-center rounded-full border border-[var(--launcher-brand)] bg-[var(--launcher-surface)] text-[var(--launcher-brand)] transition-opacity motion-reduce:transition-none hover:opacity-100 focus:opacity-100 ${isSelected ? 'opacity-100' : 'opacity-0'}`}
                         onPointerDown={(event) => {
                           event.stopPropagation()
                           setConnectingFrom(node.id)
@@ -1734,7 +1740,7 @@ export default function CollaborationPanel() {
           <button
             type="button"
             title={t('launcher.collaboration.canvas_expand_left')}
-            className="absolute left-5 top-1/2 z-10 grid size-8 -translate-y-1/2 place-items-center rounded-full border border-[var(--launcher-brand)] bg-[var(--launcher-surface)]/80 text-[var(--launcher-brand)] shadow-[0_4px_12px_rgba(42,70,90,0.18)] transition-opacity hover:bg-white"
+            className="absolute left-5 top-1/2 z-10 grid size-8 -translate-y-1/2 place-items-center rounded-full border border-[var(--launcher-brand)] bg-[var(--launcher-surface)]/80 text-[var(--launcher-brand)] shadow-[0_4px_12px_rgba(42,70,90,0.18)] transition-opacity motion-reduce:transition-none hover:bg-white"
             onClick={() => expandWorld('left')}
           >
             <Plus className="size-4" />
@@ -1742,7 +1748,7 @@ export default function CollaborationPanel() {
           <button
             type="button"
             title={t('launcher.collaboration.canvas_expand_top')}
-            className="absolute left-1/2 top-5 z-10 grid size-8 -translate-x-1/2 place-items-center rounded-full border border-[var(--launcher-brand)] bg-[var(--launcher-surface)]/80 text-[var(--launcher-brand)] shadow-[0_4px_12px_rgba(42,70,90,0.18)] transition-opacity hover:bg-white"
+            className="absolute left-1/2 top-5 z-10 grid size-8 -translate-x-1/2 place-items-center rounded-full border border-[var(--launcher-brand)] bg-[var(--launcher-surface)]/80 text-[var(--launcher-brand)] shadow-[0_4px_12px_rgba(42,70,90,0.18)] transition-opacity motion-reduce:transition-none hover:bg-white"
             onClick={() => expandWorld('top')}
           >
             <Plus className="size-4" />
@@ -1750,7 +1756,7 @@ export default function CollaborationPanel() {
           <button
             type="button"
             title={t('launcher.collaboration.canvas_expand_right')}
-            className="absolute right-5 top-1/2 z-10 grid size-8 -translate-y-1/2 place-items-center rounded-full border border-[var(--launcher-brand)] bg-[var(--launcher-surface)]/80 text-[var(--launcher-brand)] shadow-[0_4px_12px_rgba(42,70,90,0.18)] transition-opacity hover:bg-white"
+            className="absolute right-5 top-1/2 z-10 grid size-8 -translate-y-1/2 place-items-center rounded-full border border-[var(--launcher-brand)] bg-[var(--launcher-surface)]/80 text-[var(--launcher-brand)] shadow-[0_4px_12px_rgba(42,70,90,0.18)] transition-opacity motion-reduce:transition-none hover:bg-white"
             onClick={() => expandWorld('right')}
           >
             <Plus className="size-4" />
@@ -1758,7 +1764,7 @@ export default function CollaborationPanel() {
           <button
             type="button"
             title={t('launcher.collaboration.canvas_expand_bottom')}
-            className="absolute bottom-5 left-1/2 z-10 grid size-8 -translate-x-1/2 place-items-center rounded-full border border-[var(--launcher-brand)] bg-[var(--launcher-surface)]/80 text-[var(--launcher-brand)] shadow-[0_4px_12px_rgba(42,70,90,0.18)] transition-opacity hover:bg-white"
+            className="absolute bottom-5 left-1/2 z-10 grid size-8 -translate-x-1/2 place-items-center rounded-full border border-[var(--launcher-brand)] bg-[var(--launcher-surface)]/80 text-[var(--launcher-brand)] shadow-[0_4px_12px_rgba(42,70,90,0.18)] transition-opacity motion-reduce:transition-none hover:bg-white"
             onClick={() => expandWorld('bottom')}
           >
             <Plus className="size-4" />
@@ -1827,7 +1833,7 @@ export default function CollaborationPanel() {
                             <button
                               type="button"
                               disabled={workflowActionBusy}
-                              className="rounded-md bg-[var(--launcher-brand)] px-2.5 py-1.5 text-xs text-white hover:bg-[var(--launcher-brand-strong)] disabled:opacity-50"
+                              className="rounded-md bg-[var(--launcher-brand)] px-2.5 py-1.5 text-xs text-[var(--launcher-on-brand)] hover:bg-[var(--launcher-brand-strong)] disabled:opacity-50"
                               onClick={() => { void openWorkflow(workflow.id, true) }}
                             >
                               {t('launcher.collaboration.workflow_enable')}
@@ -1958,14 +1964,14 @@ export default function CollaborationPanel() {
                         <div className="flex gap-2">
                           <button
                             type="button"
-                            className="flex-1 rounded-md bg-[var(--launcher-brand)] px-3 py-2 text-white transition-colors hover:bg-[var(--launcher-brand-strong)]"
+                            className="flex-1 rounded-md bg-[var(--launcher-brand)] px-3 py-2 text-[var(--launcher-on-brand)] transition-colors motion-reduce:transition-none hover:bg-[var(--launcher-brand-strong)]"
                             onClick={() => completeNode(selectedNode.id)}
                           >
                             {t('launcher.collaboration.complete_node')}
                           </button>
                           <button
                             type="button"
-                            className="flex-1 rounded-md border border-danger/40 px-3 py-2 text-danger transition-colors hover:bg-danger/5"
+                            className="flex-1 rounded-md border border-danger/40 px-3 py-2 text-danger transition-colors motion-reduce:transition-none hover:bg-danger/5"
                             onClick={() => failNode(selectedNode.id)}
                           >
                             {t('launcher.collaboration.fail_node')}

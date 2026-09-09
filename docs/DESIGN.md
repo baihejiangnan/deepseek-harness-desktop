@@ -5,12 +5,14 @@
 ## 组件与主题
 
 - 使用 React、Tailwind CSS 4、HeroUI 和 Gravity UI Icons；优先复用现有组件，不为已有图标另画 SVG。
+- 共享原语在 [launcher-ui.tsx](../src/components/launcher-ui.tsx)（`SectionCard`、`ErrorBanner`、`StatusBadge`、`StatusNotice`、`TextInput`），长任务的进行中/成功/失败统一走 [save-status.ts](../src/utils/save-status.ts)；新页面用它们，不再各自画一套。变更预览只有一份渲染实现 [provider-plan-view.tsx](../src/components/provider-plan-view.tsx)，**同一类计划不应在不同入口显示出不同详细程度**。
 - 默认主题为 `mist-blue-sakura-pink`，配置默认值、加载回退和前端初始值保持一致。
 - 页面布局优先 Tailwind；共享主题、动效、第三方覆盖放 main.css。弹层、提示与菜单也必须跟随主题。
 
 | Token | 语义 |
 | --- | --- |
 | --launcher-brand / --launcher-brand-strong | 主操作、强调文字 |
+| --launcher-on-brand | **填在主色背景上的文字色**。品牌底必须配它，不要写 `text-white` |
 | --launcher-canvas | 页面底色 |
 | --launcher-surface / --launcher-sidebar | 内容与侧栏表面 |
 | --launcher-selected | 选中状态背景 |
@@ -20,15 +22,23 @@
 
 不要从某个主题复制固定颜色到新页面。继承 HeroUI 语义色时检查按钮文字、禁用态、焦点与 portal 中的对比度。状态不能只用颜色表达。
 
+**`--launcher-on-brand` 是按实测定下的，不是风格偏好**：原先主色按钮统一写 `text-white`，实测 18 个主题里 **6 个的白字对比度低于 3:1**（`neon-aqua-green` 2.07、`sage-light-yellow` 2.37、`pale-blue-mint` 2.45、`mint-peacock-green` 2.50、`mint-orange-gold` 2.86、`aqua-green-almond` 2.89），违反"按钮文字必须在所有主题下保持可读"。没有任何单一文字色能同时满足全部主题（换成深色会把 `deep-blue-soft-pink` 拉到 2.03），所以该变量**逐主题取值**，共 **10 个主题**因此由白转深。改任一 `--launcher-brand` 色值时必须按 WCAG 相对亮度重算它：取白与该近黑墨色中对比度更高者。改后全主题最低值为 **4.19:1**，无主题低于 3:1。
+
 ## 布局与信息层级
 
 顶部一级导航固定为启动、下载、协作、设置、更多。实例配置中的左侧实例列表覆盖式展开，不挤压配置内容。下载页共享目标实例选择器，避免子页各自维护不同目标。
 
+顶部应用栏保留用户选择的完整多色渐变，个性化选择器用连续渐变色条预览配色。导航与窗口控制使用浅色半透明底和深色文字，避免文字直接落在渐变浅色端。一级导航选中项保持稳定尺寸，不用缩放或位移动画造成跳动。页面主标题、说明、工具栏按上下层级排列；工具较多时允许换行，不能为维持单行而压缩标题或按钮。
+
 普通内容使用紧凑正文和辅助文字；标题用于说明当前任务，不使用营销式大标题。沿用所在页面字号层级，不任意新增字号体系。卡片通常 rounded-md，避免卡片套卡片和装饰性渐变球。
+
+共享内容卡片可使用极轻的层次阴影来区分页面底色，但边框仍承担主要边界；同一页面不要叠加多种阴影强度。实例创建等任务页需要可见的页标题和一句用途说明，不能只依赖侧栏或表单字段让用户推断当前步骤。
 
 工具栏、分页、图标按钮保持稳定尺寸。动态状态文字不得推移其他控件；计数使用 tabular-nums。窄窗口中路径和长名称应换行或截断，并保留必要的完整内容访问方式。避免整页水平滚动。
 
 ## 操作与反馈
+
+新建实例页采用紧凑表单与独立底部操作栏。“取消 / 创建实例”始终位于可见区域，不随表单滚出窗口；窗口较小或提示内容增加时只滚动表单区。服务商模板列表限制高度并局部滚动，避免大量模板挤走主要操作。
 
 | 状态 | 必须明确的信息 |
 | --- | --- |
@@ -50,6 +60,12 @@
 ## 动效与桌面行为
 
 页面和实例切换优先 transform/opacity，尊重 prefers-reduced-motion；进度宽度过渡和脉冲也要关闭或降级。不为轻量动画引入重型依赖。
+
+减少动效在 `main.css` 的**一个** `@media (prefers-reduced-motion: reduce)` 块里统一兜底：既关掉 `.launcher-content-enter`，也把 `::view-transition-group(*)` 的时长归零——原生 View Transition 的分组时长不在任何调用点上，散着加 `motion-reduce:` 覆盖不到它。新增切换动画不必重复处理，但**新增非视图动画仍需自带降级**。
+
+调用点这一侧现在是**可核对的**：全应用带 `className` 且含 `transition-*` 工具类的行共 60 行，全部带 `motion-reduce:` 兜底，未兜底为 0（2026-09-09 实测；此前 `collaboration-panel.tsx` 整页 13 处、以及共享加载原语 `loadable.tsx` 的进度宽度过渡都没有降级，已补齐）。用这条命令复核，不要相信任何"已经一致了"的说法：`grep -rn className src --include=*.tsx | grep transition- | grep -vc motion-reduce` 应输出 0。
+
+**唯一保留的例外是 spinner 旋转**（`.animate-load-spin` 与 `animate-spin`）。它不是装饰：那是该控件"处理中"的唯一可见反馈，关掉会让按钮看起来像失效——属于"降级"里应当保留的那一类，所以刻意不加 `motion-reduce`。骨架脉冲（`animate-pulse`，7 处）与进度条宽度过渡则全部降级，因为它们只是装饰。
 
 顶部空白区域可用 data-tauri-drag-region；交互按钮保留点击行为。窄窗口测试拖拽、一级导航、最小化和关闭是否冲突。关闭启动器隐藏到托盘，不能在视觉交互中暗示实例都已退出。
 

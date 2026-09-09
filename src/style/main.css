@@ -121,11 +121,17 @@ html[data-theme="light"] {
   .launcher-content-enter {
     animation: none;
   }
+  /* 页面与实例切换走原生 View Transition：root 的新旧层上面已设为 animation: none，
+     但 ::view-transition-group(*) 还带着 240ms 时长，切换照样会动。在这里归零，
+     而不是去每个调用点加 motion-reduce —— 一处覆盖现在与以后所有切换。 */
+  ::view-transition-group(*) {
+    animation-duration: 0s;
+  }
 }
 
 /* 启动器拥有独立于 DSH WebView 的品牌层，避免跟随深色主题后失去对比度。 */
 .launcher-theme {
-  --launcher-brand: #3f73e8;
+  --launcher-brand: #3f73e8; --launcher-on-brand: #ffffff;
   --launcher-gradient: linear-gradient(110deg, #3f73e8, #6e9cf0 55%, #d7e6ff);
   --launcher-brand-strong: #2f5fc9;
   --launcher-canvas: #edf4ff;
@@ -197,7 +203,7 @@ html[data-theme="light"] {
    palettes. These variables never reach the instance WebView. */
 .launcher-theme-forest-teal {
   --launcher-gradient: linear-gradient(110deg, #3f8378, #72b7a6 55%, #dcece7);
-  --launcher-brand: #3f8378;
+  --launcher-brand: #3f8378; --launcher-on-brand: #ffffff;
   --launcher-brand-strong: #2d665e;
   --launcher-canvas: #eaf2ef;
   --launcher-surface: rgba(255, 255, 255, 0.88);
@@ -210,7 +216,7 @@ html[data-theme="light"] {
 
 .launcher-theme-charcoal {
   --launcher-gradient: linear-gradient(110deg, #59636a, #9aa5aa 55%, #e2e7e9);
-  --launcher-brand: #59636a;
+  --launcher-brand: #59636a; --launcher-on-brand: #ffffff;
   --launcher-brand-strong: #424b52;
   --launcher-canvas: #edf0f1;
   --launcher-surface: rgba(255, 255, 255, 0.9);
@@ -223,7 +229,7 @@ html[data-theme="light"] {
 
 .launcher-theme-warm-clay {
   --launcher-gradient: linear-gradient(110deg, #a46f61, #c79887 55%, #f1e0d9);
-  --launcher-brand: #a46f61;
+  --launcher-brand: #a46f61; --launcher-on-brand: #ffffff;
   --launcher-brand-strong: #815446;
   --launcher-canvas: #f5efeb;
   --launcher-surface: rgba(255, 255, 255, 0.9);
@@ -236,7 +242,7 @@ html[data-theme="light"] {
 
 .launcher-theme-rose-gray {
   --launcher-gradient: linear-gradient(110deg, #927682, #b59aa7 55%, #eadfe6);
-  --launcher-brand: #927682;
+  --launcher-brand: #927682; --launcher-on-brand: #ffffff;
   --launcher-brand-strong: #725968;
   --launcher-canvas: #f3eff2;
   --launcher-surface: rgba(255, 255, 255, 0.9);
@@ -249,7 +255,20 @@ html[data-theme="light"] {
 
 /* Image-referenced gradient palettes. The first color is the navigation anchor,
    while the three colors are also used by the settings swatches. */
-.launcher-header { background: var(--launcher-gradient) !important; }
+.launcher-header {
+  background: var(--launcher-gradient) !important;
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--launcher-brand) 42%, transparent);
+}
+
+.launcher-header > div:first-child {
+  color: white;
+}
+
+.launcher-panel {
+  box-shadow:
+    0 1px 2px rgba(25, 39, 62, 0.04),
+    0 10px 28px color-mix(in srgb, var(--launcher-brand-strong) 6%, transparent);
+}
 
 .launcher-plugin-progress {
   background-color: #27a987;
@@ -263,79 +282,79 @@ html[data-theme="light"] {
 }
 .launcher-theme-lake-blue-soft-pink {
   --launcher-gradient: linear-gradient(110deg, #27a6cc, #80bfd4 54%, #fcc5c5);
-  --launcher-brand: #247da1; --launcher-brand-strong: #1b5e7d; --launcher-canvas: #eef8fa;
+  --launcher-brand: #247da1; --launcher-on-brand: #ffffff; --launcher-brand-strong: #1b5e7d; --launcher-canvas: #eef8fa;
   --launcher-surface: rgba(255, 255, 255, .9); --launcher-sidebar: #f4fbfc; --launcher-selected: #dceff5;
   --launcher-border: #c3e0e8; --launcher-ink: #193b4b; --launcher-muted: #5e8190;
 }
 .launcher-theme-turquoise-ice-blue {
   --launcher-gradient: linear-gradient(110deg, #18a271, #66d4bd 54%, #b4fffa);
-  --launcher-brand: #168b67; --launcher-brand-strong: #10634e; --launcher-canvas: #eafbf5;
+  --launcher-brand: #168b67; --launcher-on-brand: #ffffff; --launcher-brand-strong: #10634e; --launcher-canvas: #eafbf5;
   --launcher-surface: rgba(255, 255, 255, .9); --launcher-sidebar: #f2fcf8; --launcher-selected: #d4f2e7;
   --launcher-border: #b9e2d3; --launcher-ink: #173c35; --launcher-muted: #5d887c;
 }
 .launcher-theme-rose-red-snow-white {
   --launcher-gradient: linear-gradient(110deg, #ff3d58, #ff9cab 54%, #ffffff);
-  --launcher-brand: #df314b; --launcher-brand-strong: #a92137; --launcher-canvas: #fff1f3;
+  --launcher-brand: #df314b; --launcher-on-brand: #ffffff; --launcher-brand-strong: #a92137; --launcher-canvas: #fff1f3;
   --launcher-surface: rgba(255, 255, 255, .92); --launcher-sidebar: #fff8f8; --launcher-selected: #ffe0e5;
   --launcher-border: #f1c5cc; --launcher-ink: #4d2630; --launcher-muted: #9b6570;
 }
 .launcher-theme-mint-orange-gold {
   --launcher-gradient: linear-gradient(110deg, #2ad4af, #89d891 54%, #fcbd60);
-  --launcher-brand: #20ac8e; --launcher-brand-strong: #147661; --launcher-canvas: #f2fbec;
+  --launcher-brand: #20ac8e; --launcher-on-brand: #ffffff; --launcher-brand-strong: #147661; --launcher-canvas: #f2fbec;
   --launcher-surface: rgba(255, 255, 255, .9); --launcher-sidebar: #f8fcf3; --launcher-selected: #e3f3d7;
   --launcher-border: #cfe4bd; --launcher-ink: #28483b; --launcher-muted: #718c71;
 }
 .launcher-theme-mint-peacock-green {
   --launcher-gradient: linear-gradient(110deg, #95ffc3, #47dca7 54%, #00af83);
-  --launcher-brand: #23b98d; --launcher-brand-strong: #08765b; --launcher-canvas: #effcf5;
+  --launcher-brand: #23b98d; --launcher-on-brand: #ffffff; --launcher-brand-strong: #08765b; --launcher-canvas: #effcf5;
   --launcher-surface: rgba(255, 255, 255, .9); --launcher-sidebar: #f5fcf8; --launcher-selected: #d9f5e7;
   --launcher-border: #bce8d2; --launcher-ink: #19483c; --launcher-muted: #60927e;
 }
 .launcher-theme-deep-blue-soft-pink {
   --launcher-gradient: linear-gradient(110deg, #303d67, #79799a 54%, #fddfdc);
-  --launcher-brand: #3b4a78; --launcher-brand-strong: #273252; --launcher-canvas: #f2f2f8;
+  --launcher-brand: #3b4a78; --launcher-on-brand: #ffffff; --launcher-brand-strong: #273252; --launcher-canvas: #f2f2f8;
   --launcher-surface: rgba(255, 255, 255, .9); --launcher-sidebar: #f8f8fb; --launcher-selected: #e7e6f0;
   --launcher-border: #d1d2e0; --launcher-ink: #2d3046; --launcher-muted: #777a91;
 }
 .launcher-theme-mist-blue-sakura-pink {
   --launcher-gradient: linear-gradient(110deg, #5b83b8, #9db4d8 54%, #ffd4e3);
-  --launcher-brand: #5b83b8; --launcher-brand-strong: #3f6190; --launcher-canvas: #f1f7fc;
+  --launcher-brand: #5b83b8; --launcher-on-brand: #ffffff; --launcher-brand-strong: #3f6190; --launcher-canvas: #f1f7fc;
   --launcher-surface: rgba(255, 255, 255, .9); --launcher-sidebar: #f7fbfe; --launcher-selected: #e1edf8;
   --launcher-border: #c9dceb; --launcher-ink: #24384f; --launcher-muted: #6d849f;
 }
 .launcher-theme-mist-cyan-light-green {
   --launcher-gradient: linear-gradient(110deg, #81bdb3, #bdd9bd 54%, #ecf6ce);
-  --launcher-brand: #5b9f95; --launcher-brand-strong: #3d766e; --launcher-canvas: #f3faef;
+  --launcher-brand: #5b9f95; --launcher-on-brand: #ffffff; --launcher-brand-strong: #3d766e; --launcher-canvas: #f3faef;
   --launcher-surface: rgba(255, 255, 255, .9); --launcher-sidebar: #f8fcf6; --launcher-selected: #e1f0df;
   --launcher-border: #c9e0cc; --launcher-ink: #2b453b; --launcher-muted: #728c7c;
 }
 .launcher-theme-sage-light-yellow {
   --launcher-gradient: linear-gradient(110deg, #a8d5ba, #d7e8bd 54%, #fff3c7);
-  --launcher-brand: #79b596; --launcher-brand-strong: #527d68; --launcher-canvas: #fbfbed;
+  --launcher-brand: #79b596; --launcher-on-brand: #ffffff; --launcher-brand-strong: #527d68; --launcher-canvas: #fbfbed;
   --launcher-surface: rgba(255, 255, 255, .9); --launcher-sidebar: #fffef6; --launcher-selected: #edf2d9;
   --launcher-border: #dce3bd; --launcher-ink: #43503b; --launcher-muted: #879273;
 }
 .launcher-theme-pale-blue-mint {
   --launcher-gradient: linear-gradient(110deg, #8ac4e2, #b5dbe5 54%, #d3eed9);
-  --launcher-brand: #6daecb; --launcher-brand-strong: #477d9b; --launcher-canvas: #f0faf9;
+  --launcher-brand: #6daecb; --launcher-on-brand: #ffffff; --launcher-brand-strong: #477d9b; --launcher-canvas: #f0faf9;
   --launcher-surface: rgba(255, 255, 255, .9); --launcher-sidebar: #f6fcfc; --launcher-selected: #e0f1f0;
   --launcher-border: #c6e0e3; --launcher-ink: #294451; --launcher-muted: #6f8e99;
 }
 .launcher-theme-aqua-green-almond {
   --launcher-gradient: linear-gradient(110deg, #19beb8, #88d3c6 54%, #fcdfc5);
-  --launcher-brand: #1da9a4; --launcher-brand-strong: #147c79; --launcher-canvas: #f0fbf8;
+  --launcher-brand: #1da9a4; --launcher-on-brand: #ffffff; --launcher-brand-strong: #147c79; --launcher-canvas: #f0fbf8;
   --launcher-surface: rgba(255, 255, 255, .9); --launcher-sidebar: #f6fcfb; --launcher-selected: #dff2ed;
   --launcher-border: #c4e3dc; --launcher-ink: #214644; --launcher-muted: #6d918e;
 }
 .launcher-theme-neon-aqua-green {
   --launcher-gradient: linear-gradient(110deg, #3afff2, #31dcb9 54%, #26af84);
-  --launcher-brand: #1dcab4; --launcher-brand-strong: #0b887a; --launcher-canvas: #eafdf7;
+  --launcher-brand: #1dcab4; --launcher-on-brand: #ffffff; --launcher-brand-strong: #0b887a; --launcher-canvas: #eafdf7;
   --launcher-surface: rgba(255, 255, 255, .88); --launcher-sidebar: #f2fdf9; --launcher-selected: #d4f8ed;
   --launcher-border: #afe8d5; --launcher-ink: #164b43; --launcher-muted: #5e9688;
 }
 .launcher-theme-deep-green-mist {
   --launcher-gradient: linear-gradient(110deg, #047625, #78bf77 54%, #e9ffe8);
-  --launcher-brand: #258b3d; --launcher-brand-strong: #17632c; --launcher-canvas: #f0faef;
+  --launcher-brand: #258b3d; --launcher-on-brand: #ffffff; --launcher-brand-strong: #17632c; --launcher-canvas: #f0faef;
   --launcher-surface: rgba(255, 255, 255, .9); --launcher-sidebar: #f6fcf4; --launcher-selected: #ddf1d9;
   --launcher-border: #c2dfbd; --launcher-ink: #23452d; --launcher-muted: #6a8e6e;
 }

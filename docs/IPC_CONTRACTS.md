@@ -48,12 +48,25 @@ await invoke('collab_poll_task', { instanceId, sessionId })
 | `set_plugin_enabled_for_instance` | `{ instanceId, pluginId, enabled }` | void |
 | `remove_plugin_for_instance` | `{ instanceId, pluginId }` | void |
 | `cancel_plugin_install` | 无 | void；当前为全局安装取消，不支持按实例/请求取消。Windows 与非 Windows 都会终止安装子进程树，逐条安装循环在每条之前检查取消标志 |
-| `import_provider_templates` | `{ instanceId, ids, overwrite }` | void；ids 为服务商模板 ID |
+| `list_provider_templates` | 无 | `ProviderTemplate[]`，全局可复用模板库；不是某个实例已写入的路由 |
+| `save_provider_template` | `{ template, apiKey?, editing? }` | void；保存时即按当前运行时目录核对路由与模型是否存在（DSH 对 settings.yaml 不设校验，写错只在使用时才炸）。`editing` 为真时按 id 覆盖 |
+| `remove_provider_template` | `{ id }` | void；只删模板库条目，不动任何实例配置，也不动凭据 |
+| `rename_provider_template` | `{ from, to }` | void；改模板库条目的 route key，**密钥留在同一条记录上**不需要重录。目录型模板沿用保存那道的运行时目录核对。拒绝：源不存在 `PROVIDER_NOT_FOUND`、撞号 `PROVIDER_ID_CONFLICT`、格式不合 `PROVIDER_ID_INVALID`、占用保留 ID `PROVIDER_ID_RESERVED` —— 全部发生在写盘之前。**只动模板库**：已写进各实例的路由一字不改 |
+| `get_provider_protocols` | 无 | 当前运行时的 `supportedProtocols()`。取不到即门禁降级为"不可配置"，**绝不回退到任何启动器内置清单** |
+| `list_runtime_catalog` | 无 | `{ generatedAt, supportedProtocols, providers[] }`；按运行时入口在进程内缓存。协议事实**按模型细分**（`providers[].protocols`），不给服务商一个布尔 |
+| `get_runtime_catalog_models` | `{ providerId }` | `{ models[], supportedProtocols, generatedAt }`；openrouter 有 333 个模型，必须按需取，不能塞进概览命令 |
+| `read_instance_providers` | `{ instanceId }` | 当前可识别的服务商配置 + 无法解析或确认的引用。**只交形状不交凭据值**，非模板自有字段（如 `headers`）只报字段名。只读，因此不要求实例停机 |
+| `plan_instance_provider_change` | `{ instanceId, templateIds, drafts, routeIdsToRemove, defaultModel }` | `{ plan: { changes, warnings, defaultModel, defaultModelAction, retainedCredentialRefs, sharing }, digest, fingerprint }`。提交的是**操作意图**；不接受前端拼的 diff。`plan.defaultModel` 单独**无法**区分"将清空"与"不改动"（两者都是 `null`），意图看 `plan.defaultModelAction` = `keep` \| `set` \| `clear`。`digest` 同时绑定凭据写入意图，但响应不含密钥值 |
+| `apply_instance_provider_change` | 同上，外加 `{ digest, fingerprint }` | 写入后的计划。在实例锁 + 文件锁内重算计划，**操作意图摘要与文档内容指纹任一失配即中止**（`PROVIDER_SETTINGS_CHANGED`），必须重新预览而非重试同一计划 |
+| `read_instance_credential_roles` | `{ instanceId }` | **机会性增强，不是写路径的依赖**。实例运行且端口确认存活时经 loopback `settings.describe` 拿"运行时声明为密钥的字段位置"；停机/拿不到端口/远端不支持/超时一律 `Ok({ source: "unavailable", reason, secretPaths: [] })` 而**不是 Err**——把正常停机报成故障会让界面显示出错，而 `unavailable` 也不得被渲染成"没有密钥字段"。只回传位置，不回传任何值 |
+| `probe_provider_template` | `{ baseUrl, protocol, apiKey?, savedId?, operation, modelId? }` | `{ models?, elapsedMs }`；`operation` 为 `models` \| `test`。`test` 的请求**由运行时的 pi-ai 适配器构造**，启动器不拼 URL；`models` 仅 OpenAI 兼容协议可读，其余返回 `PROVIDER_DISCOVERY_UNSUPPORTED` |
 | `collab_start_task` | `{ instanceId, task }` | `{ sessionId, workspaceId }` |
 | `collab_poll_task` | `{ instanceId, sessionId }` | `{ done, result }`；result 是当前解析的文本产物 |
 | `collab_cancel_task` | `{ instanceId, sessionId }` | void |
 
-数据定义：[实例类型](../src/store/modules/launcher/types.ts)、[运行时类型](../src-tauri/src/config/dsh_runtime.rs)、[协作类型](../src-tauri/src/service/collab/mod.rs)。
+服务商与运行时目录命令全部要求启动器模式（`ensure_launcher_update_context`），并共用 `RuntimeUseGuard`：运行时被占用时返回 `DSH_RUNTIME_BUSY`，不与运行时切换、更新并发。
+
+数据定义：[实例类型](../src/store/modules/launcher/types.ts)、[运行时类型](../src-tauri/src/config/dsh_runtime.rs)、[协作类型](../src-tauri/src/service/collab/mod.rs)、[服务商契约类型](../src/components/provider-contracts.ts)。
 
 常用嵌套结构：
 
@@ -78,7 +91,17 @@ interface ProfileExportInput {
   includePlugins: boolean
   includeSessions: boolean
 }
+/** 凭据意图必须显式声明："留空"不能同时表示"保留原密钥"和"改走环境认证"。 */
+interface ProviderDraft {
+  template: ProviderTemplate
+  apiKey: string | null
+  credentialMode?: 'keep' | 'replace' | 'none'
+}
 ```
+
+`credentialMode` 与 `apiKey` 必须自洽，后端只校验不自洽而不猜意图：`replace` 却空密钥 → `PROVIDER_KEY_REQUIRED`；`keep` / `none` 却带密钥 → `PROVIDER_CREDENTIAL_MODE_INVALID`。`keep` 由写入脚本从文档原地取回引用名（启动器不知道也不该猜那个名字）；`none` 只取消引用，**已存的凭据值不删除**。
+
+`templateIds` 装的是 `template.id`，也就是实例 `llm-pi-ai.providers` 下的 route key：模板库本身没有独立于 route key 的内部标识（曾经的 `templateId` / `revision` 两个字段从无写入、从无读取，已于 2026-09-09 删除），`provider_store` 的 save/get/remove 全部按同一个 key 定位。所以 `save_provider_template` 的 `editing` 分支**不接受**改 key（对不上就 `PROVIDER_NOT_FOUND`，写盘之前），改 key 只有 `rename_provider_template` 这一个入口，它搬的是同一条记录、密钥跟着走。
 
 实例 version 是兼容元数据，不代表每个实例独立选择核心运行时。启动成功结果的平台判定差异见 [架构说明](ARCHITECTURE.md)。
 

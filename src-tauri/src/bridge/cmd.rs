@@ -311,11 +311,17 @@ fn parse_failed_plugins(log: &str) -> Vec<String> {
     for line in log.lines() {
         let lower = line.to_ascii_lowercase();
         for marker in ["plugin tree failed to load ", "plugin tree failed: "] {
-            let Some(index) = lower.find(marker) else { continue };
+            let Some(index) = lower.find(marker) else {
+                continue;
+            };
             let tail = line[index + marker.len()..].trim_start_matches([':', ' ', '\t']);
             let candidate = tail
-                .trim_matches(|character: char| character == '`' || character == '\'' || character == '"')
-                .split(|character: char| character.is_whitespace() || character == '(' || character == ':')
+                .trim_matches(|character: char| {
+                    character == '`' || character == '\'' || character == '"'
+                })
+                .split(|character: char| {
+                    character.is_whitespace() || character == '(' || character == ':'
+                })
                 .next()
                 .unwrap_or("");
             if is_plugin_token(candidate) && !plugins.iter().any(|item| item == candidate) {
@@ -331,7 +337,8 @@ fn is_plugin_token(value: &str) -> bool {
         && value.len() <= 160
         && (value.starts_with("dsh-") || value.starts_with("@"))
         && value.bytes().all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, b'@' | b'/' | b'-' | b'_' | b'.')
+            character.is_ascii_alphanumeric()
+                || matches!(character, b'@' | b'/' | b'-' | b'_' | b'.')
         })
 }
 
@@ -732,6 +739,12 @@ pub async fn export_instance_home(
     export::export_instance_home(app_handle, &instance_id).await
 }
 
+/// 取消正在进行的导出；取消只作用于当前正在导出的那个实例。
+#[tauri::command]
+pub async fn cancel_instance_export(instance_id: String) -> Result<(), String> {
+    export::request_cancel(&instance_id)
+}
+
 /// 从启动器派生一个独立实例宿主进程。宿主进程拥有自己的 Tauri 窗口、
 /// Harness 子进程和运行时端口，不与启动器进程共享 workflow 全局状态。
 #[tauri::command]
@@ -937,8 +950,12 @@ pub fn quit_app(app_handle: AppHandle) -> Result<(), String> {
 
 /// Only stop child handles owned by this launcher, never discover unrelated processes.
 pub(crate) fn stop_instance_hosts_on_exit() {
-    let ids: Vec<String> = instance_hosts().lock().unwrap_or_else(|error| error.into_inner())
-        .keys().cloned().collect();
+    let ids: Vec<String> = instance_hosts()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .keys()
+        .cloned()
+        .collect();
     for id in ids {
         if let Err(error) = stop_instance_window(id.clone()) {
             log::error!("Failed to stop instance host {id} on exit: {error}");
@@ -1232,8 +1249,12 @@ pub async fn create_instance(
     let _operation_guard = instance_operation_lock().lock().await;
     let home = config::instance::normalize_home_for_export(&input.dsh_home)?;
     for instance in config::instance::list(&app_handle)?.instances {
-        if instance.dsh_home == home && instance_home_is_running(&app_handle, &instance)?.is_some() {
-            return Err(format!("INSTANCE_RUNNING:{}:{}", instance.id, instance.name));
+        if instance.dsh_home == home && instance_home_is_running(&app_handle, &instance)?.is_some()
+        {
+            return Err(format!(
+                "INSTANCE_RUNNING:{}:{}",
+                instance.id, instance.name
+            ));
         }
     }
     let instance = config::instance::create(&app_handle, input)?;
@@ -1254,8 +1275,12 @@ pub async fn update_instance(
     }
     let home = config::instance::normalize_home_for_export(&input.dsh_home)?;
     for instance in config::instance::list(&app_handle)?.instances {
-        if instance.dsh_home == home && instance_home_is_running(&app_handle, &instance)?.is_some() {
-            return Err(format!("INSTANCE_RUNNING:{}:{}", instance.id, instance.name));
+        if instance.dsh_home == home && instance_home_is_running(&app_handle, &instance)?.is_some()
+        {
+            return Err(format!(
+                "INSTANCE_RUNNING:{}:{}",
+                instance.id, instance.name
+            ));
         }
     }
     let instance = config::instance::update(&app_handle, input)?;
@@ -1324,7 +1349,10 @@ pub async fn remove_instance_registry_only(
     let _operation_guard = instance_operation_lock().lock().await;
     let current = config::instance::find(&app_handle, &id)?;
     if instance_home_is_running(&app_handle, &current)?.is_some() {
-        return Err(format!("INSTANCE_HOME_RUNNING:{}:{}", current.id, current.name));
+        return Err(format!(
+            "INSTANCE_HOME_RUNNING:{}:{}",
+            current.id, current.name
+        ));
     }
     let registry = config::instance::remove_registry_entry(&app_handle, &id)?;
     crate::desktop::builder::refresh_native_tray_menu(&app_handle);
@@ -1438,17 +1466,43 @@ pub async fn install_plugin_packages_for_instance(
     let _operation_guard = instance_operation_lock().lock().await;
     let previous = config::instance::active();
     config::instance::set_active(Some(target));
+    let total = specs.len();
+    // 规格总数在解析后就已知，先发一条 0/total，界面才能立刻显示分母。
+    let _ = app_handle.emit(
+        "plugin-install-progress",
+        PluginManualInstallProgress {
+            completed: 0,
+            total,
+            spec: String::new(),
+        },
+    );
     let mut result = Ok(());
-    for spec in specs {
+    for (index, spec) in specs.into_iter().enumerate() {
         // 取消只结束当前子进程；不在迭代间检查就会继续安装下一个规格。
         if plugin::install_was_cancelled() {
             result = Err("PLUGIN_INSTALL_CANCELLED: plugin installation was stopped".to_string());
             break;
         }
+        let _ = app_handle.emit(
+            "plugin-install-progress",
+            PluginManualInstallProgress {
+                completed: index,
+                total,
+                spec: spec.clone(),
+            },
+        );
         if let Err(error) = plugin::install(&app_handle, &[spec]).await {
             result = Err(error);
             break;
         }
+        let _ = app_handle.emit(
+            "plugin-install-progress",
+            PluginManualInstallProgress {
+                completed: index + 1,
+                total,
+                spec: String::new(),
+            },
+        );
     }
     config::instance::set_active(previous);
     result
@@ -1528,6 +1582,15 @@ struct PluginPackInstallProgress {
     completed: usize,
     total: usize,
     plugin: String,
+}
+
+/// 手动安装的逐条进度。`spec` 是用户自己填写的公开包规格，不含凭据。
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginManualInstallProgress {
+    completed: usize,
+    total: usize,
+    spec: String,
 }
 
 /// 在指定实例的 Profile 中安装插件包，已存在的直接依赖会被跳过。
@@ -1705,21 +1768,53 @@ fn provider_store_path(app: &AppHandle) -> std::path::PathBuf {
 }
 
 #[tauri::command]
-pub fn list_provider_templates(app_handle: AppHandle) -> Result<Vec<crate::service::providers::ProviderTemplate>, String> {
+pub fn list_provider_templates(
+    app_handle: AppHandle,
+) -> Result<Vec<crate::service::providers::ProviderTemplate>, String> {
     ensure_launcher_update_context()?;
     crate::service::provider_store::list(&provider_store_path(&app_handle))
 }
 
 #[tauri::command]
-pub fn save_provider_template(app_handle: AppHandle, template: crate::service::providers::ProviderTemplate, api_key: Option<String>, editing: Option<bool>) -> Result<(), String> {
+pub async fn save_provider_template(
+    app_handle: AppHandle,
+    template: crate::service::providers::ProviderTemplate,
+    api_key: Option<String>,
+    editing: Option<bool>,
+) -> Result<(), String> {
     ensure_launcher_update_context()?;
-    crate::service::provider_store::save(&provider_store_path(&app_handle), template, api_key, editing.unwrap_or(false))
+    // 保存即核对：DSH 对 settings.yaml 里的错误路由/模型不设校验，只会在使用时才失败。
+    verify_catalog_template(&app_handle, &template).await?;
+    crate::service::provider_store::save(
+        &provider_store_path(&app_handle),
+        template,
+        api_key,
+        editing.unwrap_or(false),
+    )
 }
 
 #[tauri::command]
 pub fn remove_provider_template(app_handle: AppHandle, id: String) -> Result<(), String> {
     ensure_launcher_update_context()?;
     crate::service::provider_store::remove(&provider_store_path(&app_handle), &id)
+}
+
+/// 重命名模板库条目的 route key。密钥与其余字段留在同一条记录上，用户不必重新录入。
+/// **只影响启动器的模板库**：已经写进实例的路由用的是实例自己的 dict key，不会被改写。
+#[tauri::command]
+pub async fn rename_provider_template(
+    app_handle: AppHandle,
+    from: String,
+    to: String,
+) -> Result<(), String> {
+    ensure_launcher_update_context()?;
+    let path = provider_store_path(&app_handle);
+    let mut candidate = crate::service::provider_store::get(&path, &from)?.template;
+    candidate.id = to.trim().to_string();
+    // 与保存共用同一道核对：目录型模板的新 key 必须仍能在运行时目录里查到，
+    // 否则库里会留下一条"改名时没人拦、之后每次应用都被拒"的模板。
+    verify_catalog_template(&app_handle, &candidate).await?;
+    crate::service::provider_store::rename(&path, &from, &candidate.id)
 }
 
 #[tauri::command]
@@ -1733,71 +1828,578 @@ pub async fn get_provider_protocols(app_handle: AppHandle) -> Result<Vec<String>
         .kill_on_drop(true);
     #[cfg(windows)]
     command.creation_flags(0x08000000);
-    let output = tokio::time::timeout(std::time::Duration::from_secs(15), command.output()).await
-        .map_err(|_| "PROVIDER_PROTOCOL_PROBE_TIMEOUT")?.map_err(|_| "PROVIDER_PROTOCOL_PROBE_FAILED")?;
-    if !output.status.success() { return Err("PROVIDER_PROTOCOL_PROBE_FAILED".into()); }
+    let output = tokio::time::timeout(std::time::Duration::from_secs(15), command.output())
+        .await
+        .map_err(|_| "PROVIDER_PROTOCOL_PROBE_TIMEOUT")?
+        .map_err(|_| "PROVIDER_PROTOCOL_PROBE_FAILED")?;
+    if !output.status.success() {
+        return Err("PROVIDER_PROTOCOL_PROBE_FAILED".into());
+    }
     serde_json::from_slice(&output.stdout).map_err(|_| "PROVIDER_PROTOCOL_PROBE_FAILED".into())
 }
 
-#[tauri::command]
-pub async fn import_provider_templates(app_handle: AppHandle, instance_id: String, ids: Vec<String>, overwrite: bool) -> Result<(), String> {
+/// 服务商目录探测的进程内缓存：键为所选运行时的入口路径，运行时切换即失效。
+static PROVIDER_CATALOG_CACHE: std::sync::Mutex<Option<(String, serde_json::Value)>> =
+    std::sync::Mutex::new(None);
+
+/// 用当前选中运行时的 Node 跑 `provider-catalog.mjs`。
+///
+/// cwd 必须是该 DSH 的**包目录**：脚本靠裸标识符解析 `@earendil-works/pi-ai/providers/all`
+/// 与 `@deepseek-ai/dsh-llm-pi-ai`，而 `node -e` 的解析基准就是启动时的 cwd，
+/// 进程内 `process.chdir` 改不动它。入口形如 `<pkg>/lib/bin.js`，故上溯两级。
+async fn run_provider_catalog(
+    app_handle: &AppHandle,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
     use tokio::io::AsyncWriteExt;
+    let _runtime_guard = RuntimeUseGuard::acquire()?;
+    let entry = config::get_dsh_binary_path(app_handle);
+    let package_dir = entry
+        .ancestors()
+        .nth(2)
+        .ok_or("PROVIDER_CATALOG_UNAVAILABLE")?;
+    let mut command = tokio::process::Command::new(config::get_dsh_node_path(app_handle));
+    command
+        .args([
+            "--input-type=module",
+            "-e",
+            include_str!("../service/provider-catalog.mjs"),
+            "--",
+            "--launcher-provider-catalog",
+        ])
+        .current_dir(package_dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    let mut child = command
+        .spawn()
+        .map_err(|_| "PROVIDER_CATALOG_UNAVAILABLE")?;
+    {
+        let mut stdin = child.stdin.take().ok_or("PROVIDER_CATALOG_UNAVAILABLE")?;
+        let payload = serde_json::to_vec(&request).map_err(|_| "PROVIDER_CATALOG_INPUT_INVALID")?;
+        stdin
+            .write_all(&payload)
+            .await
+            .map_err(|_| "PROVIDER_CATALOG_UNAVAILABLE")?;
+        stdin
+            .flush()
+            .await
+            .map_err(|_| "PROVIDER_CATALOG_UNAVAILABLE")?;
+        // 关闭 stdin 让脚本结束读取循环。
+        drop(stdin);
+    }
+    let output = tokio::time::timeout(std::time::Duration::from_secs(20), child.wait_with_output())
+        .await
+        .map_err(|_| "PROVIDER_CATALOG_TIMEOUT")?
+        .map_err(|_| "PROVIDER_CATALOG_UNAVAILABLE")?;
+    if !output.status.success() {
+        // 脚本只写稳定码，这里原样透传；其余情况统一收敛为一个码，避免带出路径或配置正文。
+        let code = String::from_utf8_lossy(&output.stderr).to_string();
+        return Err(if code.starts_with("PROVIDER_CATALOG_") {
+            code
+        } else {
+            "PROVIDER_CATALOG_UNAVAILABLE".into()
+        });
+    }
+    serde_json::from_slice(&output.stdout).map_err(|_| "PROVIDER_CATALOG_UNAVAILABLE".into())
+}
+
+#[tauri::command]
+pub async fn list_runtime_catalog(app_handle: AppHandle) -> Result<serde_json::Value, String> {
+    ensure_launcher_update_context()?;
+    let key = config::get_dsh_binary_path(&app_handle)
+        .to_string_lossy()
+        .into_owned();
+    if let Ok(guard) = PROVIDER_CATALOG_CACHE.lock() {
+        if let Some((cached, value)) = guard.as_ref() {
+            if *cached == key {
+                return Ok(value.clone());
+            }
+        }
+    }
+    let mut value =
+        run_provider_catalog(&app_handle, serde_json::json!({ "operation": "list" })).await?;
+    // 判定只在 Rust 算一次，前端只消费结论。
+    if let Some(providers) = value
+        .get_mut("providers")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for provider in providers.iter_mut() {
+            let verdict = crate::service::providers::judge_catalog_provider(provider);
+            if let Some(map) = provider.as_object_mut() {
+                map.insert(
+                    "configurable".into(),
+                    serde_json::json!(verdict.configurable),
+                );
+                map.insert("limitation".into(), serde_json::json!(verdict.limitation));
+            }
+        }
+    }
+    if let Ok(mut guard) = PROVIDER_CATALOG_CACHE.lock() {
+        *guard = Some((key, value.clone()));
+    }
+    Ok(value)
+}
+
+#[tauri::command]
+pub async fn get_runtime_catalog_models(
+    app_handle: AppHandle,
+    provider_id: String,
+) -> Result<serde_json::Value, String> {
+    ensure_launcher_update_context()?;
+    // 目录里 openrouter 有 333 个模型，必须按需取，不能塞进概览命令。
+    let mut value = run_provider_catalog(
+        &app_handle,
+        serde_json::json!({ "operation": "models", "providerId": provider_id }),
+    )
+    .await?;
+    let supported: Vec<String> = value
+        .get("supportedProtocols")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::to_string)
+        .collect();
+    if let Some(models) = value
+        .get_mut("models")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        crate::service::providers::mark_catalog_models(models, &supported);
+    }
+    Ok(value)
+}
+
+/// 目录型模板的运行时核对：路由与模型必须真的存在于当前运行时。
+/// DSH 对 settings.yaml 里写错的路由/模型**不做任何校验**，只在使用时才失败，
+/// 因此这层校验必须在启动器侧、并在保存时就做，而不是留到导入。
+async fn verify_catalog_template(
+    app_handle: &AppHandle,
+    template: &crate::service::providers::ProviderTemplate,
+) -> Result<(), String> {
+    if !template.is_catalog() {
+        return Ok(());
+    }
+    let catalog = get_runtime_catalog_models(app_handle.clone(), template.id.clone()).await?;
+    let models: Vec<serde_json::Value> = catalog
+        .get("models")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut route = serde_json::Map::new();
+    for model in &models {
+        if let Some(id) = model.get("id").and_then(serde_json::Value::as_str) {
+            route.insert(
+                id.to_string(),
+                serde_json::json!({ "api": model.get("api") }),
+            );
+        }
+    }
+    template.validate_against_catalog(&serde_json::Value::Object(route))
+}
+
+/// 跑一次服务商脚本并解析 JSON 输出。脚本只写 `PROVIDER_*` 稳定码，
+/// 其余情况一律收敛到 `fallback`，避免把模块原始错误（可能含路径或文档正文）带出去。
+async fn run_provider_script(
+    app_handle: &AppHandle,
+    request: serde_json::Value,
+    fallback: &str,
+    timeout_secs: u64,
+) -> Result<serde_json::Value, String> {
+    use tokio::io::AsyncWriteExt;
+    let mut command = tokio::process::Command::new(config::get_dsh_node_path(app_handle));
+    command
+        .args([
+            "--input-type=module",
+            "-e",
+            include_str!("../service/provider-import.mjs"),
+            "--",
+            "--launcher-provider-import",
+        ])
+        .current_dir(config::get_dsh_working_dir(app_handle))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    let mut child = command.spawn().map_err(|_| fallback.to_string())?;
+    {
+        let mut stdin = child.stdin.take().ok_or(fallback.to_string())?;
+        let payload = serde_json::to_vec(&request).map_err(|_| fallback.to_string())?;
+        stdin
+            .write_all(&payload)
+            .await
+            .map_err(|_| fallback.to_string())?;
+        // 关闭 stdin，脚本的读取循环才会结束。
+        drop(stdin);
+    }
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        child.wait_with_output(),
+    )
+    .await
+    .map_err(|_| format!("{fallback}_TIMEOUT"))?
+    .map_err(|_| fallback.to_string())?;
+    if !output.status.success() {
+        let code = String::from_utf8_lossy(&output.stderr).to_string();
+        return Err(if code.starts_with("PROVIDER_") && code.len() < 100 {
+            code
+        } else {
+            fallback.to_string()
+        });
+    }
+    serde_json::from_slice(&output.stdout).map_err(|_| fallback.to_string())
+}
+
+/// 凭据三态。编辑时"留空"不得同时承担"保留现有密钥"与"改走环境认证"两种语义（方案 §2.5），
+/// 因此意图由调用方显式声明，后端只校验它与"是否带了密钥"自洽。
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderCredentialMode {
+    /// 实例文档里已有的 `apiKeyEnv` 与凭据值原样保留，本次不改写。
+    Keep,
+    /// 用本次提交的密钥写入引用；引用已存在即替换其值。
+    Replace,
+    /// 取消引用，走服务商环境认证。已存的凭据值不删除。
+    #[serde(rename = "none")]
+    Ambient,
+}
+
+/// 实例内直接添加的草稿：与模板库条目同构，但**不写入模板库**。
+/// 校验、目录核对与字段归属必须与落库模板完全一致，否则会出现两套严格程度不同的添加路径。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderDraft {
+    pub template: crate::service::providers::ProviderTemplate,
+    pub api_key: Option<String>,
+    /// 缺省即"添加"语义：带了密钥就声明引用，没带就不声明。编辑已有路由时必须显式给。
+    #[serde(default)]
+    pub credential_mode: Option<ProviderCredentialMode>,
+}
+
+/// 单个模板 → 写入内容。落库模板与未落库草稿共用，保证两条添加路径的校验完全同等。
+/// `protocols` 由调用方取一次传入：它在子进程里探测，逐条取会变成每条起一个 Node。
+async fn provider_planned_entry(
+    app_handle: &AppHandle,
+    template: &crate::service::providers::ProviderTemplate,
+    api_key: Option<&str>,
+    credential_mode: Option<ProviderCredentialMode>,
+    protocols: &[String],
+) -> Result<serde_json::Value, String> {
+    verify_catalog_template(app_handle, template).await?;
+    let mut profile = template.profile(protocols)?;
+    let has_key = !api_key.unwrap_or_default().is_empty();
+    // 声明了模式就必须与是否带密钥自洽，否则会出现"选了保留却写进新密钥"这类静默偏差。
+    match credential_mode {
+        Some(ProviderCredentialMode::Replace) if !has_key => {
+            return Err("PROVIDER_KEY_REQUIRED".into())
+        }
+        Some(ProviderCredentialMode::Keep | ProviderCredentialMode::Ambient) if has_key => {
+            return Err("PROVIDER_CREDENTIAL_MODE_INVALID".into())
+        }
+        _ => {}
+    }
+    // 只有确实要声明引用时才把 `apiKeyEnv` 留在 profile 里。
+    // Keep 交由脚本从文档原地取回：这里填 `credential_ref()` 等于把引用改名，不是保留。
+    // Ambient 与未给密钥都靠脚本的自有字段清理把引用摘掉（DSH 原生同语义：空引用走环境认证）。
+    let declares_reference = match credential_mode {
+        Some(ProviderCredentialMode::Replace) => true,
+        Some(ProviderCredentialMode::Keep | ProviderCredentialMode::Ambient) => false,
+        None => has_key,
+    };
+    if !declares_reference {
+        if let Some(map) = profile.as_object_mut() {
+            map.remove("apiKeyEnv");
+        }
+    }
+    Ok(serde_json::json!({
+        "template": { "id": template.id, "name": template.name },
+        "api_key": api_key,
+        "credentialRef": template.credential_ref(),
+        "credentialMode": credential_mode,
+        "profile": profile,
+        // 这里刻意不放 templateRevision：预览与模板的一致性由摘要负责 ——
+        // apply 会重新读模板重算计划，而计划摘要覆盖了从模板派生的每一个字段。
+        // 多带一个没人读的"版本号"只会被误读成还有第二道校验。
+    }))
+}
+
+/// 模板库里的若干模板 + 未落库草稿 → 写入内容列表。协议白名单只探测一次。
+async fn provider_planned_entries(
+    app_handle: &AppHandle,
+    ids: &[String],
+    drafts: &[ProviderDraft],
+) -> Result<Vec<serde_json::Value>, String> {
+    if ids.is_empty() && drafts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let protocols = get_provider_protocols(app_handle.clone()).await?;
+    let mut planned = Vec::with_capacity(ids.len() + drafts.len());
+    for id in ids {
+        let entry = crate::service::provider_store::get(&provider_store_path(app_handle), id)?;
+        // 模板库条目自带密钥，沿用"添加"语义：没有三态可言。
+        planned.push(
+            provider_planned_entry(
+                app_handle,
+                &entry.template,
+                Some(entry.api_key.as_str()),
+                None,
+                &protocols,
+            )
+            .await?,
+        );
+    }
+    for draft in drafts {
+        planned.push(
+            provider_planned_entry(
+                app_handle,
+                &draft.template,
+                draft.api_key.as_deref(),
+                draft.credential_mode,
+                &protocols,
+            )
+            .await?,
+        );
+    }
+    Ok(planned)
+}
+
+/// 实例配置写操作的共同前置：目标存在、相关实例已停、运行时未被占用。
+async fn guard_provider_write(
+    app_handle: &AppHandle,
+    instance_id: &str,
+) -> Result<
+    (
+        std::path::PathBuf,
+        String,
+        config::instance::InstanceSharing,
+    ),
+    String,
+> {
+    let target = config::instance::find(app_handle, instance_id)?;
+    if let Some(running) = instance_home_is_running(app_handle, &target)? {
+        return Err(format!("INSTANCE_RUNNING:{}:{}", running.id, running.name));
+    }
+    let sharing = config::instance::sharing(
+        app_handle,
+        &target.dsh_home,
+        &target.profile,
+        Some(instance_id),
+    )?;
+    Ok((target.dsh_home, target.profile, sharing))
+}
+
+fn attach_provider_plan_sharing(
+    plan: &mut serde_json::Value,
+    sharing: &config::instance::InstanceSharing,
+) {
+    if let Some(map) = plan
+        .get_mut("plan")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        map.insert(
+            "sharing".into(),
+            serde_json::json!({
+                "level": sharing.level,
+                "homeUsers": sharing.home_users,
+                "profileUsers": sharing.profile_users,
+            }),
+        );
+    }
+}
+
+#[tauri::command]
+pub async fn plan_instance_provider_change(
+    app_handle: AppHandle,
+    instance_id: String,
+    template_ids: Vec<String>,
+    drafts: Vec<ProviderDraft>,
+    route_ids_to_remove: Vec<String>,
+    default_model: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    ensure_launcher_update_context()?;
+    let _runtime_guard = RuntimeUseGuard::acquire()?;
+    let (home, profile, sharing) = guard_provider_write(&app_handle, &instance_id).await?;
+    let entries = provider_planned_entries(&app_handle, &template_ids, &drafts).await?;
+    let request = serde_json::json!({
+        "operation": "plan",
+        "entry": config::get_dsh_binary_path(&app_handle),
+        "home": home,
+        "profile": profile,
+        "entries": entries,
+        "removals": route_ids_to_remove,
+        "defaultModel": default_model,
+    });
+    let mut plan = run_provider_script(&app_handle, request, "PROVIDER_PLAN_FAILED", 25).await?;
+    // 共享影响在这里由注册表算，不让前端猜：settings.yaml 是 Home 级，同 Home 全部实例都受影响。
+    attach_provider_plan_sharing(&mut plan, &sharing);
+    Ok(plan)
+}
+
+#[tauri::command]
+pub async fn apply_instance_provider_change(
+    app_handle: AppHandle,
+    instance_id: String,
+    template_ids: Vec<String>,
+    drafts: Vec<ProviderDraft>,
+    route_ids_to_remove: Vec<String>,
+    default_model: Option<serde_json::Value>,
+    digest: String,
+    fingerprint: String,
+) -> Result<serde_json::Value, String> {
     ensure_launcher_update_context()?;
     let _runtime_guard = RuntimeUseGuard::acquire()?;
     let _operation_guard = instance_operation_lock().lock().await;
+    let (home, profile, _) = guard_provider_write(&app_handle, &instance_id).await?;
+    // 应用前重新生成写入内容：模板或草稿在预览之后变过，脚本内的摘要比对就会失配并中止。
+    let entries = provider_planned_entries(&app_handle, &template_ids, &drafts).await?;
+    let request = serde_json::json!({
+        "operation": "apply",
+        "entry": config::get_dsh_binary_path(&app_handle),
+        "home": home,
+        "profile": profile,
+        "entries": entries,
+        "removals": route_ids_to_remove,
+        "defaultModel": default_model,
+        "digest": digest,
+        "fingerprint": fingerprint,
+    });
+    run_provider_script(&app_handle, request, "PROVIDER_IMPORT_FAILED", 30).await
+}
+
+/// 读回实例里可识别的服务商配置。只读，因此**不要求实例停机**；
+/// 但调用方不得把它当成实例实际可用的全部服务商——插件在运行时注册的路由无法从文件枚举。
+#[tauri::command]
+pub async fn read_instance_providers(
+    app_handle: AppHandle,
+    instance_id: String,
+) -> Result<serde_json::Value, String> {
+    ensure_launcher_update_context()?;
+    let _runtime_guard = RuntimeUseGuard::acquire()?;
     let target = config::instance::find(&app_handle, &instance_id)?;
-    if let Some(running) = instance_home_is_running(&app_handle, &target)? {
-        return Err(format!("INSTANCE_RUNNING:{}:{}", running.id, running.name));
+    let request = serde_json::json!({
+        "operation": "read",
+        "entry": config::get_dsh_binary_path(&app_handle),
+        "home": target.dsh_home,
+        "profile": target.profile,
+    });
+    run_provider_script(&app_handle, request, "PROVIDER_READBACK_FAILED", 25).await
+}
+
+/// 机会性增强：实例正在运行且端口确认存活时，问它本身"哪些字段被声明为密钥"。
+///
+/// 这不是写路径的依赖。改配置与删服务商都要求实例停机，而那恰恰是它必然不可用的
+/// 时候；真正兜底的是 `provider-import.mjs` 里"整份 settings 文档 + `$DSH_HOME/.env`"
+/// 的文本扫描，那条不依赖任何连接。
+///
+/// 所以停机、拿不到端口、远端不支持这个方法、超时——一律返回
+/// `source: "unavailable"` 而**不是 Err**。把一次正常的停机态报成故障，界面就会
+/// 显示成出错；而 `unavailable` 也绝不能被渲染成"没有凭据字段"。
+/// 只回传字段位置，不回传任何值（见 `providers::secret_paths`）。
+#[tauri::command]
+pub async fn read_instance_credential_roles(
+    app_handle: AppHandle,
+    instance_id: String,
+) -> Result<serde_json::Value, String> {
+    ensure_launcher_update_context()?;
+    let unavailable = |reason: &str| serde_json::json!({ "source": "unavailable", "reason": reason, "secretPaths": [] });
+    // 先确认目标存在，再判断是否在运行：不存在要报错，停机只是"不可用"。
+    config::instance::find(&app_handle, &instance_id)?;
+    if !instance_host_is_running(&instance_id)? {
+        return Ok(unavailable("not_running"));
     }
-    let entries = ids.iter().map(|id| crate::service::provider_store::get(&provider_store_path(&app_handle), id)).collect::<Result<Vec<_>, _>>()?;
-    for entry in &entries { entry.template.validate()?; }
-    if entries.is_empty() { return Ok(()); }
-    let request = serde_json::json!({"entry": config::get_dsh_binary_path(&app_handle), "home": target.dsh_home, "profile": target.profile, "entries": entries, "overwrite": overwrite});
-    let mut command = tokio::process::Command::new(config::get_dsh_node_path(&app_handle));
-    command.args(["--input-type=module", "-e", include_str!("../service/provider-import.mjs"), "--", "--launcher-provider-import"])
-        .current_dir(config::get_dsh_working_dir(&app_handle))
-        .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
-    #[cfg(windows)]
-    command.creation_flags(0x08000000);
-    let mut child = command.spawn().map_err(|_| "PROVIDER_IMPORT_START_FAILED")?;
-    let mut stdin = child.stdin.take().ok_or("PROVIDER_IMPORT_START_FAILED")?;
-    stdin.write_all(&serde_json::to_vec(&request).map_err(|_| "PROVIDER_IMPORT_FAILED")?).await.map_err(|_| "PROVIDER_IMPORT_FAILED")?;
-    drop(stdin);
-    let output = child.wait_with_output().await.map_err(|_| "PROVIDER_IMPORT_FAILED")?;
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(if error.starts_with("PROVIDER_") && error.len() < 100 { error.to_string() } else { "PROVIDER_IMPORT_FAILED".into() });
-    }
-    Ok(())
+    let port = match resolve_running_instance_port(&app_handle, &instance_id) {
+        Ok(port) => port,
+        Err(_) => return Ok(unavailable("no_port")),
+    };
+    let describe = match tokio::time::timeout(
+        std::time::Duration::from_secs(8),
+        crate::service::collab::rpc(port, "settings.describe", serde_json::json!({})),
+    )
+    .await
+    {
+        Ok(Ok(value)) => value,
+        Ok(Err(_)) => return Ok(unavailable("remote_failed")),
+        Err(_) => return Ok(unavailable("timeout")),
+    };
+    Ok(
+        serde_json::json!({ "source": "runtime", "secretPaths": crate::service::providers::secret_paths(&describe) }),
+    )
 }
 
 /// Probe a draft without saving it. A blank key on edit resolves only in the backend.
 #[tauri::command]
-pub async fn probe_provider_template(app_handle: AppHandle, base_url: String, protocol: String, api_key: Option<String>, saved_id: Option<String>, operation: String, model_id: Option<String>) -> Result<serde_json::Value, String> {
+pub async fn probe_provider_template(
+    app_handle: AppHandle,
+    base_url: String,
+    protocol: String,
+    api_key: Option<String>,
+    saved_id: Option<String>,
+    operation: String,
+    model_id: Option<String>,
+) -> Result<serde_json::Value, String> {
     use tokio::io::AsyncWriteExt;
     ensure_launcher_update_context()?;
     let _runtime_guard = RuntimeUseGuard::acquire()?;
     let key = match api_key.filter(|key| !key.is_empty()) {
         Some(key) => key,
-        None => crate::service::provider_store::get(&provider_store_path(&app_handle), &saved_id.ok_or("PROVIDER_KEY_REQUIRED")?)?.api_key,
+        None => {
+            crate::service::provider_store::get(
+                &provider_store_path(&app_handle),
+                &saved_id.ok_or("PROVIDER_KEY_REQUIRED")?,
+            )?
+            .api_key
+        }
     };
     let request = serde_json::json!({"baseUrl":base_url,"protocol":protocol,"apiKey":key,"operation":operation,"modelId":model_id});
     let mut command = tokio::process::Command::new(config::get_dsh_node_path(&app_handle));
-    command.args(["--input-type=module", "-e", include_str!("../service/provider-probe.mjs"), "--", "--launcher-provider-probe"])
+    command
+        .args([
+            "--input-type=module",
+            "-e",
+            include_str!("../service/provider-probe.mjs"),
+            "--",
+            "--launcher-provider-probe",
+        ])
         .current_dir(config::get_dsh_working_dir(&app_handle))
-        .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
     #[cfg(windows)]
     command.creation_flags(0x08000000);
     let output = tokio::time::timeout(std::time::Duration::from_secs(20), async {
         let mut child = command.spawn().map_err(|_| "PROVIDER_PROBE_FAILED")?;
         let mut stdin = child.stdin.take().ok_or("PROVIDER_PROBE_FAILED")?;
-        stdin.write_all(&serde_json::to_vec(&request).map_err(|_| "PROVIDER_PROBE_FAILED")?).await.map_err(|_| "PROVIDER_PROBE_FAILED")?;
+        stdin
+            .write_all(&serde_json::to_vec(&request).map_err(|_| "PROVIDER_PROBE_FAILED")?)
+            .await
+            .map_err(|_| "PROVIDER_PROBE_FAILED")?;
         drop(stdin);
-        child.wait_with_output().await.map_err(|_| "PROVIDER_PROBE_FAILED")
-    }).await.map_err(|_| "PROVIDER_PROBE_TIMEOUT")??;
+        child
+            .wait_with_output()
+            .await
+            .map_err(|_| "PROVIDER_PROBE_FAILED")
+    })
+    .await
+    .map_err(|_| "PROVIDER_PROBE_TIMEOUT")??;
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(if error.starts_with("PROVIDER_") && error.len() < 100 && error.bytes().all(|b| b.is_ascii_uppercase() || b == b'_') { error.to_string() } else { "PROVIDER_PROBE_FAILED".into() });
+        return Err(
+            if error.starts_with("PROVIDER_")
+                && error.len() < 100
+                && error.bytes().all(|b| b.is_ascii_uppercase() || b == b'_')
+            {
+                error.to_string()
+            } else {
+                "PROVIDER_PROBE_FAILED".into()
+            },
+        );
     }
     serde_json::from_slice(&output.stdout).map_err(|_| "PROVIDER_PROBE_FAILED".into())
 }
@@ -2159,18 +2761,112 @@ pub async fn open_external_url(app_handle: AppHandle, url: String) -> Result<(),
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn provider_plan_sharing_is_nested_in_the_frontend_plan_shape() {
+        let mut response = serde_json::json!({
+            "plan": { "changes": [] },
+            "digest": "digest",
+            "fingerprint": "fingerprint",
+        });
+        let sharing = crate::config::instance::InstanceSharing {
+            home_users: 2,
+            profile_users: 1,
+            level: "shared_home".into(),
+        };
+
+        super::attach_provider_plan_sharing(&mut response, &sharing);
+
+        assert_eq!(response["plan"]["sharing"]["level"], "shared_home");
+        assert_eq!(response["plan"]["sharing"]["homeUsers"], 2);
+        assert!(
+            response.get("sharing").is_none(),
+            "sharing must not be added beside plan"
+        );
+    }
+
+    /// 凭据三态整条契约都压在 serde 的字段命名上：`credentialMode` 一旦解析不出来，
+    /// 它会**静默**退化成 `None` = "添加"语义，而"带密钥就声明引用、没带就不声明"
+    /// 正是 S4 要修的"留空被当成取消引用"那个行为。没有测试的话，这个回归不会报错，
+    /// 只会让编辑路由时悄悄改掉引用。这里拿前端实际提交的 JSON 原样验一遍。
+    #[test]
+    fn frontend_provider_draft_arrives_with_its_credential_intent() {
+        let draft: super::ProviderDraft = serde_json::from_value(serde_json::json!({
+            "template": {
+                "id": "deepseek",
+                "name": "DeepSeek",
+                "baseUrl": "",
+                "protocol": "",
+                "modelId": "",
+                "models": [],
+                "modelOverrides": [{ "id": "chat", "contextWindow": 64000 }],
+                "selection": "all",
+                "defaultForNew": false,
+                "kind": "catalog",
+            },
+            "apiKey": null,
+            "credentialMode": "keep",
+        }))
+        .expect("the exact payload provider-edit.tsx sends must deserialize");
+        assert!(matches!(
+            draft.credential_mode,
+            Some(super::ProviderCredentialMode::Keep)
+        ));
+        assert_eq!(
+            draft.template.model_overrides.len(),
+            1,
+            "camelCase collections must reach the writer intact"
+        );
+        assert!(matches!(
+            draft.template.selection,
+            crate::service::providers::ProviderModelSelection::All
+        ));
+
+        // 三种意图各自的线上表示都要认。
+        for wire in ["keep", "replace", "none"] {
+            let json = format!("\"{wire}\"");
+            serde_json::from_str::<super::ProviderCredentialMode>(&json).unwrap_or_else(|error| {
+                panic!("credential mode {wire} must arrive as intended: {error}")
+            });
+        }
+        // 拼错的名字必须被拒，不能悄悄落成别的含义——`none` 是唯一改过名的变体。
+        assert!(
+            serde_json::from_str::<super::ProviderCredentialMode>("\"ambient\"").is_err(),
+            "the ambient variant is renamed to none and must not be accepted by its Rust name"
+        );
+
+        // 缺省仍是"添加"语义：模板库那条路径就是不传这个字段。
+        let legacy: super::ProviderDraft = serde_json::from_value(serde_json::json!({
+            "template": { "id": "g", "name": "G" },
+            "apiKey": "k",
+        }))
+        .expect("a draft without credentialMode stays valid");
+        assert!(legacy.credential_mode.is_none());
+    }
+
     #[cfg(windows)]
     #[test]
     fn stopping_owned_host_reaps_process_and_removes_tracking() {
         use std::os::windows::process::CommandExt;
         let child = std::process::Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 60"])
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 60",
+            ])
             .creation_flags(0x08000000)
-            .spawn().expect("spawn isolated test host");
+            .spawn()
+            .expect("spawn isolated test host");
         let id = format!("test-owned-host-{}", child.id());
-        super::instance_hosts().lock().unwrap_or_else(|error| error.into_inner()).insert(id.clone(), child);
+        super::instance_hosts()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(id.clone(), child);
         super::stop_instance_window(id.clone()).expect("stop isolated host");
-        assert!(!super::instance_hosts().lock().unwrap_or_else(|error| error.into_inner()).contains_key(&id));
+        assert!(!super::instance_hosts()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains_key(&id));
         super::stop_instance_window(id).expect("stop remains idempotent");
     }
     use super::{filter_installed_failed_plugins, parse_failed_plugins};
