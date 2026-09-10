@@ -35,7 +35,7 @@ interface ShellTask {
 
 export default function LauncherShell() {
   const { t } = useTranslation()
-  const { loading, registry, runningInstanceIds, busyInstanceId, installProgress, launchFailure } = useStore(store.launcher)
+  const { loading, registry, busyInstanceId, busyInstanceAction, installProgress, launchFailure } = useStore(store.launcher)
   const { updating, progress, phaseTitle, indeterminate } = useStore(updater)
   const [appearance, setAppearance] = useState({ theme: 'mist-blue-sakura-pink', blur: false })
   const [section, setSection] = useState<Section>('launch')
@@ -137,8 +137,7 @@ export default function LauncherShell() {
   const busyInstance = busyInstanceId != null
     ? registry.instances.find(item => item.id === busyInstanceId) ?? null
     : null
-  // busyInstanceId 同时覆盖启动与停止：仍在运行清单里的是停止中。
-  const busyIsStopping = busyInstanceId != null && runningInstanceIds.includes(busyInstanceId)
+  const busyIsStopping = busyInstanceAction === 'stopping'
 
   const tasks: ShellTask[] = []
   if (updating) {

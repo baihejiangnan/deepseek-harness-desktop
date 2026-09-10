@@ -12,6 +12,7 @@
 - [开发说明](docs/DEVELOPMENT.zh.md) / [English](docs/DEVELOPMENT.md)：环境、命令和回归清单。
 - [发布检查](docs/RELEASING.md)、[当前待办](TODO.md)、[附属清理方案](docs/INSTANCE_CLEANUP_PLAN.md)。
 - [服务商与界面升级执行基线](docs/PROVIDER_UI_UPGRADE_PLAN.md)：该模块的设计决定、阶段表、逐项落地状态与**尚未验证项**。改服务商模块前先读它的边界与验收段。
+- [已知缺陷清单](docs/KNOWN_DEFECTS.md)：master 全量源码通读得到的缺陷台账（P0/P1/P2），每条带位置、证据等级与"已排除"记录。接手、排期或声称"已修"之前先读它，不要凭这份清单以外的记忆判断现状。
 
 本文保留强制约束，详细说明由对应文档维护。行为/协议/数据流变化时同步相关文档；待办标明待实现、待验证与验收条件，不把过程记录或旧交接当作完成证据。
 

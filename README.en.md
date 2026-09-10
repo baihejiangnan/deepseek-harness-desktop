@@ -6,7 +6,7 @@
 
 > One launcher, N fully isolated DSH instances. And when you need them to, they work as a team.
 
-![version](https://img.shields.io/badge/version-0.0.10-8b5cf6)
+![version](https://img.shields.io/badge/version-0.0.11-8b5cf6)
 ![license](https://img.shields.io/badge/license-MIT%2Bnon--commercial-4caf50)
 ![platform](https://img.shields.io/badge/platform-Windows%20x64-0078d6)
 ![tauri](https://img.shields.io/badge/Tauri-2-24c8db)
@@ -139,8 +139,8 @@ The launcher only *manages*; it never touches DSH core: no rewriting of DSH's we
 
 ## Quick start
 
-- **Installer**: download the [Windows installer](https://github.com/baihejiangnan/deepseek-harness-desktop/releases/download/v0.0.10/DSH.Launcher_0.0.10_x64-setup.exe), install, and launch from the Start menu or desktop shortcut.
-- **Portable (Windows x64)**: download the [Windows portable executable](https://github.com/baihejiangnan/deepseek-harness-desktop/releases/download/v0.0.10/DSH-Launcher_0.0.10_windows_x64_portable.exe) and double-click to run — no installation required.
+- **Installer**: download the [Windows installer](https://github.com/baihejiangnan/deepseek-harness-desktop/releases/download/v0.0.11/DSH.Launcher_0.0.11_x64-setup.exe), install, and launch from the Start menu or desktop shortcut.
+- **Portable (Windows x64)**: download the [Windows portable executable](https://github.com/baihejiangnan/deepseek-harness-desktop/releases/download/v0.0.11/DSH-Launcher_0.0.11_windows_x64_portable.exe) and double-click to run — no installation required.
 
 No manual Node.js or DSH installation is required. When you launch an instance for the first time, the launcher detects what is missing and downloads it over the network; compatible runtimes already on your machine are reused first.
 
@@ -164,7 +164,7 @@ pnpm tauri dev                   # development
 pnpm tauri build --bundles nsis  # Windows installer
 ```
 
-The installer lands in `src-tauri/target/release/bundle/nsis/`. The portable Windows exe (double-click to run, no installation required) is available from the [v0.0.10 Release](https://github.com/baihejiangnan/deepseek-harness-desktop/releases/tag/v0.0.10). Development details: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+The installer lands in `src-tauri/target/release/bundle/nsis/`. The portable Windows exe (double-click to run, no installation required) is available from the [v0.0.11 Release](https://github.com/baihejiangnan/deepseek-harness-desktop/releases/tag/v0.0.11). Development details: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## Privacy
 

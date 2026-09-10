@@ -658,8 +658,17 @@ pub async fn select_dsh_runtime(
 pub async fn update_active_dsh_runtime(app_handle: AppHandle) -> Result<bool, String> {
     ensure_launcher_update_context()?;
     let _mutation_guard = RuntimeMutationGuard::acquire()?;
+    // All registered instance hosts use the selected runtime. Once the writer guard is held,
+    // no new host can acquire a runtime reader, so it is safe to drain every currently owned
+    // host before replacing or asking the package manager to update the runtime files.
+    stop_all_instance_hosts_for_runtime_update()?;
+    if workflow::has_owned_process() {
+        workflow::stop(app_handle.clone()).await?;
+    }
     if !list_running_instances()?.is_empty() || workflow::has_owned_process() {
-        return Err("DSH_RUNTIME_IN_USE:stop all instances before updating runtime".to_string());
+        return Err(
+            "DSH_RUNTIME_STOP_FAILED:runtime processes remain after forced shutdown".to_string(),
+        );
     }
     let runtime = config::active(&app_handle)
         .ok_or_else(|| "DSH_RUNTIME_NOT_FOUND:no active runtime".to_string())?;
@@ -972,6 +981,21 @@ pub fn list_running_instances() -> Result<Vec<String>, String> {
     Ok(hosts.keys().cloned().collect())
 }
 
+/// Stop every instance host owned by this launcher before mutating the selected DSH runtime.
+///
+/// Instance hosts are snapshotted first because `stop_instance_window` takes the same hosts
+/// mutex. Each stop terminates the complete host/DSH process tree and removes its tracking
+/// entry; a failure aborts the update instead of replacing files underneath a live process.
+fn stop_all_instance_hosts_for_runtime_update() -> Result<Vec<String>, String> {
+    let ids = list_running_instances()?;
+    for id in &ids {
+        stop_instance_window(id.clone()).map_err(|error| {
+            format!("DSH_RUNTIME_STOP_FAILED:instance {id} could not be stopped: {error}")
+        })?;
+    }
+    Ok(ids)
+}
+
 /// 解析指定实例当前监听的实际端口：实例必须仍在启动器托管且端口确实在监听。
 ///
 /// 每个实例宿主把 Harness 的 PID/端口写入自己的 DSH Home 下的
@@ -1226,7 +1250,8 @@ pub fn stop_instance_window(id: String) -> Result<(), String> {
     {
         // 只 child.kill() 会留下孤儿 DSH：宿主被 SIGKILL 后无法执行自己的退出
         // 回收。宿主以 process_group(0) 启动，这里按进程组先 TERM 后 KILL。
-        crate::service::workflow::kill_pid_tree(pid);
+        // 随后统一 child.wait()，宿主的退出不依赖这条 kill 的成功。
+        let _ = crate::service::workflow::kill_pid_tree(pid);
     }
 
     let _ = child.wait();
@@ -2868,6 +2893,39 @@ mod tests {
             .unwrap_or_else(|error| error.into_inner())
             .contains_key(&id));
         super::stop_instance_window(id).expect("stop remains idempotent");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn runtime_update_shutdown_reaps_every_owned_instance_host() {
+        use std::os::windows::process::CommandExt;
+        let mut ids = Vec::new();
+        for index in 0..2 {
+            let child = std::process::Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "Start-Sleep -Seconds 60",
+                ])
+                .creation_flags(0x08000000)
+                .spawn()
+                .expect("spawn isolated test host");
+            let id = format!("test-update-host-{index}-{}", child.id());
+            super::instance_hosts()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(id.clone(), child);
+            ids.push(id);
+        }
+
+        let stopped = super::stop_all_instance_hosts_for_runtime_update()
+            .expect("runtime update shutdown succeeds");
+        assert_eq!(stopped.len(), 2);
+        assert!(ids.iter().all(|id| !super::instance_hosts()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains_key(id)));
     }
     use super::{filter_installed_failed_plugins, parse_failed_plugins};
     use std::collections::HashSet;

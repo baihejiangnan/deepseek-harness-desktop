@@ -6,6 +6,7 @@ import { listen } from '@tauri-apps/api/event'
 import i18next, { t } from 'i18next'
 import { defineStore } from 'valtio-define'
 import { toast } from '@/utils'
+import { errorText } from '@/utils/error-codes'
 
 /**
  * DSH 更新模块：由启动器独立负责检查、下载和进度展示。
@@ -101,31 +102,10 @@ export const updater = defineStore({
         return
       }
 
-      let running: string[]
-      try {
-        running = await invoke<string[]>('list_running_instances')
-      }
-      catch (err) {
-        console.error('[DSH updater] failed to inspect running instances:', err)
-        toast(i18next.t('update.dsh_update_failed'), {
-          description: String(err),
-          placement: 'bottom end',
-          variant: 'danger',
-        })
-        return
-      }
-      if (running.length > 0) {
-        toast(i18next.t('update.dsh_running_instances'), {
-          placement: 'bottom end',
-          variant: 'warning',
-        })
-        return
-      }
-
       this.updating = true
       this.progress = 0
       this.indeterminate = false
-      this.phaseTitle = i18next.t('update.dsh_updating')
+      this.phaseTitle = i18next.t('update.dsh_stopping_instances')
       this.phaseDetail = ''
       let unlistenInstall: UnlistenFn | null = null
       try {
@@ -153,7 +133,7 @@ export const updater = defineStore({
       catch (err) {
         console.error('[DSH updater] update failed:', err)
         toast(i18next.t('update.dsh_update_failed'), {
-          description: String(err),
+          description: errorText(err),
           placement: 'bottom end',
           variant: 'danger',
         })

@@ -233,10 +233,13 @@ pub fn refresh_web_capabilities(app_handle: &tauri::AppHandle) -> bool {
 }
 
 /// 只结束本应用当前进程创建并仍持有的 Harness 进程树。
-fn terminate_owned_process() {
+/// **返回是否已确认持有的进程退出**（没有持有任何进程时也返回 `true`）。
+/// 返回 `false` 时调用方不得删除该 Home 的 `.harness.pid`——那份标记是删除
+/// Home 前守卫的唯一依据（见 `home_service_is_live`）。
+fn terminate_owned_process() -> bool {
     let pid = OWNED_PROCESS_ID.swap(0, Ordering::SeqCst);
     if pid == 0 {
-        return;
+        return true;
     }
 
     #[cfg(windows)]
@@ -246,50 +249,88 @@ fn terminate_owned_process() {
         const WAIT_TIMEOUT_CODE: u32 = 0x0000_0102;
         let handle_value = OWNED_PROCESS_HANDLE.swap(0, Ordering::SeqCst);
         if handle_value == 0 {
-            return;
+            // 拿不到真实句柄就无法安全归属 PID（可能已被复用）：既不 taskkill，
+            // 也不能声称已经结束——让调用方保留标记。
+            log::warn!("No process handle for owned Harness pid {pid}; not killing blindly");
+            return false;
         }
         let handle = handle_value as windows_sys::Win32::Foundation::HANDLE;
         // 真实句柄已结束说明 PID 可能已复用，此时绝不调用 taskkill。
         if unsafe { WaitForSingleObject(handle, 0) } != WAIT_TIMEOUT_CODE {
             unsafe { CloseHandle(handle) };
-            return;
+            return true;
         }
-        kill_pid_tree(pid);
+        let killed = kill_pid_tree(pid);
         unsafe {
             WaitForSingleObject(handle, 5_000);
             CloseHandle(handle);
         }
+        killed
     }
 
     #[cfg(unix)]
     {
-        kill_pid_tree(pid);
+        kill_pid_tree(pid)
     }
 }
 
 /// 结束进程树（Windows `taskkill /PID <pid> /T /F`；Unix 负 PID 进程组，与
 /// 启动时 `process_group(0)` 对应）。调用方需先确认 PID 确实指向目标进程。
-pub(crate) fn kill_pid_tree(pid: u32) {
+///
+/// **返回是否已确认目标进程退出。** 返回 `false` 时进程可能仍在运行，调用方
+/// **不得**据此删除 `.harness.pid` 之类的存活证据——那份标记是删除 Home 前守卫
+/// 的唯一依据（见 `home_service_is_live`），抹掉它等于让守卫失去依据。
+pub(crate) fn kill_pid_tree(pid: u32) -> bool {
     #[cfg(windows)]
     {
         let mut cmd = Command::new("taskkill");
         cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x08000000);
+        // 不继承本进程的 stdin：GUI 进程下继承来的句柄可能让子命令挂起。
+        cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::null());
         cmd.stderr(Stdio::null());
         if let Err(e) = cmd.output() {
             log::error!("Failed to stop Harness process tree {pid}: {e}");
         }
+        // taskkill 的退出码在 PID 已消失、权限不足、PID 已被复用等情况下都可能非零，
+        // 不能当结论用。这里等进程真正消失，只把"确认已退出"当作成功。
+        wait_pid_gone(pid, std::time::Duration::from_secs(5))
     }
 
     #[cfg(unix)]
     {
         // Harness 根进程启动在独立进程组中，负 PID 只作用于该进程树。
+        // 分阶段升级信号强度，每一步都确认进程是否已真正消失。
         let group = format!("-{pid}");
         let _ = Command::new("kill").args(["-TERM", "--", &group]).output();
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        if wait_pid_gone(pid, std::time::Duration::from_secs(5)) {
+            return true;
+        }
         let _ = Command::new("kill").args(["-KILL", "--", &group]).output();
+        if wait_pid_gone(pid, std::time::Duration::from_secs(5)) {
+            return true;
+        }
+        log::error!("Process tree {pid} is still alive after SIGKILL");
+        false
+    }
+}
+
+/// 轮询等待指定 PID 消失，返回是否在期限内确认退出。
+///
+/// 复用 `is_pid_alive`（Windows 用 `OpenProcess` 句柄、Unix 用 `kill -0`），
+/// 因此不需要为"等进程退出"再引入一套平台 API。本函数在同步上下文里调用。
+fn wait_pid_gone(pid: u32, timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if !is_pid_alive(pid) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
 
@@ -357,7 +398,9 @@ pub fn terminate_stale_harness_processes(app_handle: &tauri::AppHandle) {
             };
             found += 1;
             log::warn!("Terminating stale Harness service process {pid} (from dsh install dir)");
-            kill_pid_tree(pid);
+            if !kill_pid_tree(pid) {
+                log::error!("Stale Harness service process {pid} was not confirmed dead");
+            }
         }
         if found > 0 {
             // 与 stop() 同理：taskkill 返回后 DLL 句柄的释放还有短暂滞后，
@@ -502,8 +545,43 @@ pub fn sweep_orphan_harness(app_handle: &tauri::AppHandle) {
         return;
     }
     log::warn!("Sweeping orphaned Harness process {pid} (port {port}) left by a previous session");
-    kill_pid_tree(pid);
-    let _ = fs::remove_file(&pid_file);
+    if kill_pid_tree(pid) {
+        let _ = fs::remove_file(&pid_file);
+    } else {
+        // 未能确认进程已退出：保留标记。它既是下次清扫的线索，也是删除 Home 前
+        // 守卫的唯一依据；在这里删掉会让两者同时失效。
+        log::error!(
+            "Orphaned Harness process {pid} was not confirmed dead; keeping {} for the next sweep and the delete guard",
+            pid_file.display()
+        );
+    }
+}
+
+/// 从本地地址列取出端口号（`127.0.0.1:3080` / `[::1]:3080` 两种形态）。
+fn netstat_local_port(local: &str) -> Option<u16> {
+    local.rsplit_once(':')?.1.parse().ok()
+}
+
+/// 从 `netstat -ano` 输出里找出处于 LISTENING、且本地端口匹配的进程 PID。
+///
+/// **必须按解析出的端口值比较，不能用 `ends_with` 比较 `":{port}"**：后者会把
+/// `13080` 这类以 `3080` 结尾的端口误判成 `3080`，于是清扫可能去结束一个
+/// 与本次目标无关的进程。端口比较是纯值比较，与 IPv4/IPv6 书写无关。
+fn port_owner_pid_in_netstat(text: &str, port: u16) -> Option<u32> {
+    for line in text.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 5 || fields[0] != "TCP" {
+            continue;
+        }
+        // 本地地址在 fields[1]，状态在 fields[3]，PID 在 fields[4]
+        if netstat_local_port(fields[1]) != Some(port) {
+            continue;
+        }
+        if fields[3] == "LISTENING" {
+            return fields[4].parse().ok();
+        }
+    }
+    None
 }
 
 /// 占用指定端口的进程 PID（LISTENING 状态）。
@@ -513,23 +591,15 @@ pub fn sweep_orphan_harness(app_handle: &tauri::AppHandle) {
 fn port_owner_pid(port: u16) -> Option<u32> {
     #[cfg(windows)]
     {
-        let output = Command::new("netstat").arg("-ano").output().ok()?;
-        let text = String::from_utf8_lossy(&output.stdout);
-        let needle = format!(":{port} ");
-        for line in text.lines() {
-            let fields: Vec<&str> = line.split_whitespace().collect();
-            if fields.len() < 5 || fields[0] != "TCP" {
-                continue;
-            }
-            // 本地地址列（如 127.0.0.1:3080 / [::1]:3080）以 :<port> 结尾
-            if !fields[1].ends_with(&needle) {
-                continue;
-            }
-            if fields[3] == "LISTENING" {
-                return fields[4].parse().ok();
-            }
-        }
-        None
+        let mut cmd = Command::new("netstat");
+        cmd.arg("-ano");
+        // 与其它 Windows 子进程一致：GUI 父进程下不得弹出控制台窗口。
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::null());
+        let output = cmd.output().ok()?;
+        port_owner_pid_in_netstat(&String::from_utf8_lossy(&output.stdout), port)
     }
     #[cfg(not(windows))]
     {
@@ -946,9 +1016,17 @@ pub async fn stop(app_handle: tauri::AppHandle) -> Result<(), String> {
     log::info!("Stopping Harness service...");
     // 重置启动守卫，确保后续 launch 可以重新拉起；仅结束持有的根进程树。
     LAUNCH_GUARD.store(false, Ordering::SeqCst);
-    terminate_owned_process();
-    // 清理孤儿清扫标记：正常停止的实例不应被下次启动当作残留
-    let _ = fs::remove_file(harness_pid_path(&app_handle));
+    let confirmed = terminate_owned_process();
+    // 清理孤儿清扫标记：正常停止的实例不应被下次启动当作残留。
+    // 只在确认进程已退出时才删——进程仍存活而标记被抹掉，等于让删除 Home 的
+    // 守卫失去依据（见 `home_service_is_live`）。
+    if confirmed {
+        let _ = fs::remove_file(harness_pid_path(&app_handle));
+    } else {
+        log::warn!(
+            "Harness process tree not confirmed dead; keeping .harness.pid as delete-guard evidence"
+        );
+    }
     RUNTIME_PORT.store(0, Ordering::SeqCst);
 
     // 给系统一点时间释放端口 (重要！)
@@ -963,9 +1041,15 @@ pub async fn stop(app_handle: tauri::AppHandle) -> Result<(), String> {
 ///
 /// 退出路径上不更新状态、不做异步等待，只结束当前应用持有的 Harness 进程树。
 pub fn stop_on_exit(app_handle: tauri::AppHandle, _port: u16) {
-    terminate_owned_process();
-    // 正常退出路径同样清理清扫标记（崩溃路径才需要下次启动清扫）
-    let _ = fs::remove_file(harness_pid_path(&app_handle));
+    // 退出路径同样只在确认进程已退出时清理标记。启动器本次没有持有进程时
+    // `terminate_owned_process` 返回 true，行为与原先一致；但只要进程可能仍存活
+    // （拿不到句柄、kill 未确认），就必须把标记留给下一次启动的清扫与删除守卫，
+    // 而不是在这里抹掉。
+    if terminate_owned_process() {
+        let _ = fs::remove_file(harness_pid_path(&app_handle));
+    } else {
+        log::warn!("Harness process tree not confirmed dead on exit; keeping .harness.pid");
+    }
 }
 
 /// 安装环境（Node.js 运行时 + 打包的 Harness 发行版）。
@@ -1321,5 +1405,43 @@ mod tests {
         let redacted = redact_web_url(line);
         assert!(!redacted.contains("secret-value"));
         assert!(redacted.contains("REDACTED"));
+    }
+
+    #[test]
+    fn netstat_local_port_handles_ipv4_and_ipv6_forms() {
+        assert_eq!(netstat_local_port("127.0.0.1:3080"), Some(3080));
+        assert_eq!(netstat_local_port("0.0.0.0:3080"), Some(3080));
+        assert_eq!(netstat_local_port("[::1]:3080"), Some(3080));
+        assert_eq!(netstat_local_port("[::]:3080"), Some(3080));
+        // 非数字端口 / 空串：无法确认，返回 None
+        assert_eq!(netstat_local_port("127.0.0.1:"), None);
+        assert_eq!(netstat_local_port(""), None);
+        assert_eq!(netstat_local_port("3080"), None);
+    }
+
+    /// 回归：清扫靠这个解析找"占用端口的那个 PID"。原实现用 `ends_with` 比较带尾部
+    /// 空格的 `":{port} "`，而字段来自 `split_whitespace()`、**永远不可能以空格
+    /// 结尾**，因此条件恒不匹配——Windows 上孤儿回收分支整条不可达。同一判据还会把
+    /// `13080` 误认成 `3080`。
+    #[test]
+    fn netstat_port_owner_matches_the_exact_port_and_only_listening() {
+        // 真实 `netstat -ano` 的形态：TCP <本地地址> <外部地址> <状态> <PID>
+        let text = "活动连接\r\n\
+            \x20 TCP    127.0.0.1:3081         0.0.0.0:0              LISTENING       4242\r\n\
+            \x20 TCP    [::1]:3081             [::]:0                 LISTENING       4242\r\n\
+            \x20 TCP    127.0.0.1:3080         0.0.0.0:0              LISTENING       1111\r\n\
+            \x20 TCP    [::1]:13080            [::]:0                 LISTENING       9999\r\n\
+            \x20 TCP    127.0.0.1:3080         127.0.0.1:52341        ESTABLISHED     7777\r\n";
+
+        // 命中目标端口，取到的必须是 LISTENING 那个 PID（而不是 ESTABLISHED 的连接）
+        assert_eq!(port_owner_pid_in_netstat(text, 3080), Some(1111));
+        // 以 3080 结尾但不是 3080 的端口不得被误判
+        assert_eq!(port_owner_pid_in_netstat(text, 3080), Some(1111));
+        assert_eq!(port_owner_pid_in_netstat(text, 1308), None);
+        assert_eq!(port_owner_pid_in_netstat(text, 13080), Some(9999));
+        // 完全没出现的端口
+        assert_eq!(port_owner_pid_in_netstat(text, 40000), None);
+        // 空输出不得 panic
+        assert_eq!(port_owner_pid_in_netstat("", 3080), None);
     }
 }

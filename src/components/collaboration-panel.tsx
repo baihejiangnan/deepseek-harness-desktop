@@ -267,6 +267,14 @@ export default function CollaborationPanel() {
   const clearTimerRef = useRef<number | null>(null)
   const workspaceRef = useRef('')
   const runModeRef = useRef<RunMode>('master')
+  /**
+   * 本次运行**由启动器真正拉起**的实例 id。
+   *
+   * 生命周期规则要求自动流水线结束后停止"其参与实例"，但用户可能早就把某个参与
+   * 实例开着（个人会话）。不区分"这次拉的"与"本来就在跑的"，结束运行就会把用户
+   * 正在用的实例一起关掉。这里只在确实走到 launchInstance 那一支时登记。
+   */
+  const runStartedInstancesRef = useRef<Set<string>>(new Set())
   const worldExtRef = useRef({ left: 0, top: 0, right: 0, bottom: 0 })
   const zoomRef = useRef(1)
 
@@ -666,6 +674,14 @@ export default function CollaborationPanel() {
           ),
         }).catch(() => {})
       }
+      // 卸载兜底：组件消失后 finalizeRun 不会再跑，而本页"常驻隐藏"的保活方式并
+      // 不保证永不销毁。只回收本次运行真正拉起的实例，用户自己的会话不动。
+      const orphaned = runStartedInstancesRef.current
+      if (orphaned.size > 0) {
+        for (const instanceId of orphaned)
+          void store.launcher.stopInstance(instanceId)
+        orphaned.clear()
+      }
     }
   }, [])
 
@@ -972,13 +988,21 @@ export default function CollaborationPanel() {
     commitStatuses(runningStatuses)
     setRunState('running')
     let launchFailed = false
+    runStartedInstancesRef.current = new Set()
     for (const node of currentNodes) {
       const minimized = node.id !== masterNode.id
+      // 已经开着的实例直接采用：再呼一次既会被后端拒绝（INSTANCE_ALREADY_STARTING_
+      // OR_RUNNING），也会让"启动失败"的判定把一次正常的主代理运行变成失败。
+      if (store.launcher.runningInstanceIds.includes(node.instanceId))
+        continue
       try {
         if (!await store.launcher.launchInstance(node.instanceId, false, minimized, portsById.get(node.instanceId))) {
           launchFailed = true
           runningStatuses[node.id] = 'failed'
           commitStatuses({ ...runningStatuses })
+        }
+        else {
+          runStartedInstancesRef.current.add(node.instanceId)
         }
       }
       catch {
@@ -986,6 +1010,10 @@ export default function CollaborationPanel() {
       }
     }
     if (launchFailed) {
+      // 只回收本次启动的实例；用户原本就开着的保持不动，避免把个人会话关掉。
+      for (const instanceId of runStartedInstancesRef.current)
+        void store.launcher.stopInstance(instanceId)
+      runStartedInstancesRef.current.clear()
       toast(t('launcher.collaboration.launch_failed'), { variant: 'danger', placement: 'bottom end' })
       setRunState('failed')
       return
@@ -1016,6 +1044,7 @@ export default function CollaborationPanel() {
     }
     commitSessions({})
     commitStatuses(idleStatuses(graphRef.current.nodes))
+    runStartedInstancesRef.current.clear()
     setRunState('idle')
   }
 
@@ -1041,9 +1070,16 @@ export default function CollaborationPanel() {
     if (allDone && runModeRef.current === 'auto') {
       // 生命周期规则（自动流水线）：全部成功即停止参与实例并释放端口；
       // 失败/审批保留现场。主代理驱动模式由用户继续交互，不自动停止。
-      const instanceIds = new Set(currentNodes.map(node => node.instanceId))
-      for (const instanceId of instanceIds)
-        void store.launcher.stopInstance(instanceId)
+      //
+      // 只停**本次运行真正拉起的**实例：用户自己早就开着的个人会话实例被这个
+      // 工作流引用时会被"采用"，但它不属于本次运行，不能替用户关掉。
+      const started = runStartedInstancesRef.current
+      for (const node of currentNodes) {
+        if (!started.has(node.instanceId))
+          continue
+        void store.launcher.stopInstance(node.instanceId)
+      }
+      started.clear()
     }
     setRunState(failed ? 'failed' : allDone ? 'done' : 'running')
   }
@@ -1076,9 +1112,13 @@ export default function CollaborationPanel() {
       return
     }
     try {
-      if (!store.launcher.runningInstanceIds.includes(instance.id) && !await store.launcher.launchInstance(instance.id)) {
-        failNode(nodeId)
-        return
+      if (!store.launcher.runningInstanceIds.includes(instance.id)) {
+        if (!await store.launcher.launchInstance(instance.id)) {
+          failNode(nodeId)
+          return
+        }
+        // 只有确实由我们拉起时才登记，finalizeRun 才会在结束时停止它。
+        runStartedInstancesRef.current.add(instance.id)
       }
       const started = await invoke<CollabTaskStart>('collab_start_task', {
         instanceId: instance.id,

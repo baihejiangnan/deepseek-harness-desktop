@@ -63,7 +63,15 @@
 
 减少动效在 `main.css` 的**一个** `@media (prefers-reduced-motion: reduce)` 块里统一兜底：既关掉 `.launcher-content-enter`，也把 `::view-transition-group(*)` 的时长归零——原生 View Transition 的分组时长不在任何调用点上，散着加 `motion-reduce:` 覆盖不到它。新增切换动画不必重复处理，但**新增非视图动画仍需自带降级**。
 
-调用点这一侧现在是**可核对的**：全应用带 `className` 且含 `transition-*` 工具类的行共 60 行，全部带 `motion-reduce:` 兜底，未兜底为 0（2026-09-09 实测；此前 `collaboration-panel.tsx` 整页 13 处、以及共享加载原语 `loadable.tsx` 的进度宽度过渡都没有降级，已补齐）。用这条命令复核，不要相信任何"已经一致了"的说法：`grep -rn className src --include=*.tsx | grep transition- | grep -vc motion-reduce` 应输出 0。
+调用点这一侧现在是**可核对的**：全应用带 `className` 且含 `transition-*` 工具类的行全部带 `motion-reduce:` 兜底，未兜底为 0（2026-09-09 实测；此后未复测。此前 `collaboration-panel.tsx` 整页 13 处、以及共享加载原语 `loadable.tsx` 的进度宽度过渡都没有降级，已补齐）。
+
+复核命令（2026-09-10 复跑，输出 0）：
+
+```bash
+grep -rn className src --include=*.tsx | grep transition- | grep -vc motion-reduce
+```
+
+**判据陷阱，别再踩第二次**：这条管道之所以成立，是因为 `grep transition-` 是在**全文件**匹配，`className` 与 `transition-*` 可以落在不同物理行（本仓库大量 `className` 跨行书写）。中间量因此是 **59 行**，而不是"两个词同行"的 58 行。任何"同一物理行内必须同时出现 `className` 与 `transition-`"的判据都会漏掉邻行守卫、把一个正确的文件误报成未兜底——本文件的早期版本就给出过一条这样的命令，现已更正。反过来，`grep -vc` 输出 0 也只说明"含 `className` 的 transition 行都有兜底"，不代表覆盖了非 `className` 途径的动画。
 
 **唯一保留的例外是 spinner 旋转**（`.animate-load-spin` 与 `animate-spin`）。它不是装饰：那是该控件"处理中"的唯一可见反馈，关掉会让按钮看起来像失效——属于"降级"里应当保留的那一类，所以刻意不加 `motion-reduce`。骨架脉冲（`animate-pulse`，7 处）与进度条宽度过渡则全部降级，因为它们只是装饰。
 

@@ -62,7 +62,8 @@ pub async fn cancel(app_handle: &AppHandle) {
     {
         let pid = ACTIVE_CHILD_PID.swap(0, Ordering::SeqCst);
         if pid != 0 {
-            crate::service::workflow::kill_pid_tree(pid);
+            // 取消是尽力而为：安装循环另有取消标志兜底，这里只负责尽快结束子进程。
+            let _ = crate::service::workflow::kill_pid_tree(pid);
         }
     }
 

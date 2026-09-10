@@ -1,6 +1,6 @@
 # Tauri 命令与事件契约
 
-核对基线：v0.0.9 源码（P0/P1/P2 修复已提交）；已发布的 v0.0.8 二进制不含这些修复，对照时注意差异。本文是启动器前后端的关键接口说明，不是 DSH 原生 HTTP API 全集，也不是承诺长期不变的第三方 SDK。精确签名以 [cmd.rs](../src-tauri/src/bridge/cmd.rs) 和 [handler 注册表](../src-tauri/src/desktop/builder.rs) 为准。
+核对基线：v0.0.10 源码（P0/P1/P2 修复已包含在 v0.0.9 起的发行包内）；开发分支工作区另有未提交改动，对照时注意差异。本文是启动器前后端的关键接口说明，不是 DSH 原生 HTTP API 全集，也不是承诺长期不变的第三方 SDK。精确签名以 [cmd.rs](../src-tauri/src/bridge/cmd.rs) 和 [handler 注册表](../src-tauri/src/desktop/builder.rs) 为准。
 
 ## 调用与命名
 
@@ -41,7 +41,7 @@ await invoke('collab_poll_task', { instanceId, sessionId })
 | `select_dsh_runtime` | `{ runtimeId }` | 选中的运行时；不是实例 ID |
 | `runtime_ready` | 无 | 当前候选运行时入口和 Node 文件可用性判断，不代表实例健康 |
 | `install_dependencies` | 无 | boolean 表示 DSH 是否真正更新；false 不等于安装失败。并发调用经安装互斥锁串行，不再因状态残留被误跳过 |
-| `update_active_dsh_runtime` | 无 | boolean；按所选运行时来源执行更新。false 表示本次更新被推迟或不支持（例如需由 npm/pnpm 自行更新的外部安装），调用方不应把它当失败上报 |
+| `update_active_dsh_runtime` | 无 | boolean；获取运行时写锁后强制停止所有受启动器托管、使用当前运行时的实例进程树，再按所选运行时来源更新。任一进程无法停止时以 `DSH_RUNTIME_STOP_FAILED` 中止。false 表示本次更新被推迟或不支持（例如需由 npm/pnpm 自行更新的外部安装），调用方不应把它当失败上报 |
 | `get_dsh_plugins_for_instance` | `{ instanceId }` | 目标 Profile 插件数组 |
 | `install_plugin_packages_for_instance` | `{ instanceId, input }` | void；解析手动规格并逐条安装。与目录/插件包安装共用同一 spec 策略：`file:`、`link:`、反斜杠路径、控制字符、以 `-` 开头一律拒绝 |
 | `install_plugin_pack_for_instance` | `{ instanceId, packId }` | packId、requested、installed、skipped |
@@ -130,7 +130,11 @@ interface ProviderDraft {
 | `INSTANCE_REGISTRY_INVALID:` | 注册表文件损坏且无可用 `.bak` 回退；提示用户不要覆盖，先人工确认备份 |
 | `INSTANCE_LAUNCH_FAILED:` | 后缀包含结构化启动失败信息；沿用 launcher store 的解析逻辑，解析失败回退文本 |
 | `DSH_RUNTIME_BUSY:` | 等待当前冲突操作结束，不并发重试写入 |
-| `DSH_RUNTIME_IN_USE:` | 停止相关实例后再切换或更新运行时 |
+| `DSH_RUNTIME_IN_USE:` | 停止相关实例后再切换运行时 |
+| `DSH_RUNTIME_STOP_FAILED:` | 更新前强制停止实例失败；保持旧运行时并处理仍在运行的实例 |
+| `DSH_RUNTIME_NOT_WRITABLE:` | 所选运行时目录不可写；换一个可写运行时或改用它的包管理器 |
+| `DSH_RUNTIME_UPDATE_FAILED:` | 包管理器更新失败或更新后版本/入口核对不符；按后缀详情处理，不要把旧运行时当已更新 |
+| `DSH_RUNTIME_UPDATE_UNSUPPORTED:` | 外部安装没有可用的包管理器；用该运行时原本的包管理器更新，启动器不猜测命令 |
 | `DSH_RUNTIME_NOT_FOUND:` / `DSH_RUNTIME_INVALID:` | 刷新候选并重新选择可验证运行时 |
 | `DSH_INTEGRITY_UNAVAILABLE:` | 无法取得可信摘要；保留错误，不跳过完整性校验 |
 | `DOWNLOAD_INTERRUPTED:` | 展示网络失败；考虑已执行的自动重试，避免无限递归重试 |

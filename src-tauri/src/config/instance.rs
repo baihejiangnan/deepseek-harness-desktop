@@ -472,7 +472,18 @@ pub fn removal_impact(app: &AppHandle, id: &str) -> Result<InstanceRemovalImpact
 ///
 /// 存活进程门在这里再查一遍：`remove` 里的同一检查是为了在写注册表之前就失败，
 /// 并能报出实例名；这一层保证任何未来的调用方也无法绕过删除一个仍在使用的 Home。
+///
+/// 链接在**规范化之前**判定：`normalize_home` 用 `dunce::canonicalize`，其语义就是
+/// 解析符号链接/junction，等到规范化之后再查已经看不到链接了，而 `remove_dir_all`
+/// 作用在解析后的目标上——那等于顺着一个名为 Home 的链接删掉用户的真实目录。
+/// 这与[清理方案](../../docs/INSTANCE_CLEANUP_PLAN.md)"不得跟随父目录链接"一致。
 fn remove_home_directory(home: &Path) -> Result<(), String> {
+    if fs::symlink_metadata(home).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err(format!(
+            "INSTANCE_HOME_SYMLINK_UNSUPPORTED: refusing to remove Home through a link: {}",
+            home.display()
+        ));
+    }
     let normalized = normalize_home(home)?;
     if let Some(pid) = crate::service::workflow::home_service_is_live(&normalized) {
         return Err(format!(
@@ -791,6 +802,47 @@ mod tests {
         assert!(home.exists(), "a refused removal must leave the Home intact");
 
         let _ = fs::remove_dir_all(&home);
+    }
+
+    /// 回归：`normalize_home` 用 `dunce::canonicalize`，会解析符号链接/junction，
+    /// 于是 `remove_dir_all` 作用在解析后的目标上——一个名为 Home 的链接会把
+    /// 用户的真实目录递归删掉。链接必须在规范化之前被拒绝。
+    #[test]
+    fn directory_link_home_is_refused_and_target_survives() {
+        let base = std::env::temp_dir().join(format!("dsh-symlink-home-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let target = base.join("real-data");
+        let link = base.join("linked-home");
+        fs::create_dir_all(&target).expect("create target");
+        // 目标里放一个哨兵：删除若跟随链接，它会消失
+        fs::write(target.join("sentinel.txt"), "keep me").expect("write sentinel");
+
+        #[cfg(windows)]
+        let created = std::os::windows::fs::symlink_dir(&target, &link).is_ok();
+        #[cfg(unix)]
+        let created = std::os::unix::fs::symlink(&target, &link).is_ok();
+
+        if !created {
+            // Windows 上创建目录符号链接需要开发者模式或提权；拿不到权限时
+            // 这条用例无法构造场景，明确跳过而不是假装通过。
+            eprintln!("skipping directory_link_home_is_refused_and_target_survives: cannot create a directory link in this environment");
+            let _ = fs::remove_dir_all(&base);
+            return;
+        }
+
+        let error = remove_home_directory(&link)
+            .expect_err("removing a Home that is a directory link must be refused");
+        assert!(
+            error.starts_with("INSTANCE_HOME_SYMLINK_UNSUPPORTED:"),
+            "{error}"
+        );
+        assert!(
+            target.join("sentinel.txt").is_file(),
+            "the link target must not be touched"
+        );
+        assert!(link.exists(), "the link itself must be left in place");
+
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

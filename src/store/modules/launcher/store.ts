@@ -1,6 +1,6 @@
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import type { InstallProgress } from '../harness/types'
-import type { DshInstance, InstanceRegistry, InstanceSharing, LauncherView } from './types'
+import type { DshInstance, InstanceBusyAction, InstanceRegistry, InstanceSharing, LauncherView } from './types'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -55,6 +55,7 @@ export const launcher = defineStore({
     runningInstanceIds: [] as string[],
     runningInstancePorts: {} as Record<string, number>,
     busyInstanceId: null as string | null,
+    busyInstanceAction: null as InstanceBusyAction | null,
     view: 'launcher' as LauncherView,
     error: '',
     sharing: null as InstanceSharing | null,
@@ -226,6 +227,7 @@ export const launcher = defineStore({
       this.launchFailure = null
       this.installProgress = null
       this.busyInstanceId = id
+      this.busyInstanceAction = 'launching'
       let unlistenInstall: UnlistenFn | null = null
       try {
         // 运行时下载在启动器进程内同步完成并上报 install-progress，
@@ -280,8 +282,10 @@ export const launcher = defineStore({
       finally {
         unlistenInstall?.()
         this.installProgress = null
-        if (this.busyInstanceId === id)
+        if (this.busyInstanceId === id && this.busyInstanceAction === 'launching') {
           this.busyInstanceId = null
+          this.busyInstanceAction = null
+        }
       }
     },
 
@@ -301,6 +305,7 @@ export const launcher = defineStore({
         return
       this.error = ''
       this.busyInstanceId = id
+      this.busyInstanceAction = 'stopping'
       try {
         await invoke('stop_instance_window', { id })
         this.runningInstanceIds = this.runningInstanceIds.filter(item => item !== id)
@@ -311,7 +316,10 @@ export const launcher = defineStore({
         this.error = String(error)
       }
       finally {
-        this.busyInstanceId = null
+        if (this.busyInstanceId === id && this.busyInstanceAction === 'stopping') {
+          this.busyInstanceId = null
+          this.busyInstanceAction = null
+        }
       }
     },
 

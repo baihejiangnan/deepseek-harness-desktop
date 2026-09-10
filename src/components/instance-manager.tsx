@@ -21,7 +21,7 @@ interface InstanceManagerProps {
 
 export default function InstanceManager({ onGoDownloads }: InstanceManagerProps) {
   const { t } = useTranslation()
-  const { registry, error, sharing, runningInstanceIds, runningInstancePorts, busyInstanceId, launchFailure, installProgress } = useStore(store.launcher)
+  const { registry, error, sharing, runningInstanceIds, runningInstancePorts, busyInstanceId, busyInstanceAction, launchFailure, installProgress } = useStore(store.launcher)
   const { updating: dshUpdating } = useStore(updater)
   const [creating, setCreating] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -42,9 +42,9 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
   // 宿主进程已启动但 Harness 尚未监听端口时，保持明确的启动中反馈。
   const activeIsStarting = activeIsRunning && activePort == null
   const activeIsBusy = active != null && busyInstanceId === active.id
-  // busyInstanceId 覆盖启动与停止两条路径：仍在运行清单里的是停止中，否则是宿主尚未登记的启动中。
-  const activeIsStopping = activeIsBusy && activeIsRunning
-  const activeIsBooting = !activeIsStopping && (activeIsStarting || activeIsBusy)
+  // 运行清单会在启动流程结束前更新，必须使用显式动作，不能从瞬时运行状态反推。
+  const activeIsStopping = activeIsBusy && busyInstanceAction === 'stopping'
+  const activeIsBooting = !activeIsStopping && (activeIsStarting || (activeIsBusy && busyInstanceAction === 'launching'))
   const groups = groupInstances(registry.instances)
   const affectedInstances = active ? registry.instances.filter(item => item.dshHome === active.dshHome) : []
   const sameHome = affectedInstances.length

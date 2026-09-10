@@ -133,7 +133,8 @@ Schema 为 `{provider(必填), model(必填), reasoningEffort?}`（`dsh-agent-de
 
 `src-tauri/src/service/providers.rs` 的模板结构已改为判别式：新增 `kind: Custom|Catalog`（`#[serde(default)]`，旧记录原样按 Custom 读取，不需要迁移脚本）、`selection: All|Subset`、`modelOverrides`。`profile()` 在 Catalog 下**只输出用户显式设置的字段**，省略 `api`/`baseURL`/`models` 以保留目录继承；`plan_import()` 在改回继承时**删除**上次钉死的 `api`/`baseURL`/`models`/`modelOverrides`，同时保留 `headers` 等第三方字段与其他 provider。7 个契约测试全通过，`cargo test` 131/131 无回归。
 
-> **2026-09-09 更正（#28 检查阶段）**：本段原先还写着"新增 `templateId`（与实例 route key 分离，旧记录缺省回退为 `id`）"和"`revision`（供 #21 并发校验）"。**两者都只有字段，没有实现**：`provider_store` 的 save/get/remove 全部按 `template.id`（即实例 route key）定位，`templateId` 在每个写入点恒为空串，`revision` 恒为 0 且没有任何自增点，唯一读方是预览载荷里一个没人取的 `templateRevision`。并发校验真正生效的是**计划摘要 + 内容指纹**——`provider-import.test.mjs` 用"模板在预览后被改动、settings 文件始终没动"这一条把它钉死了（`PROVIDER_SETTINGS_CHANGED`，且不写一个字节）。因此 `templateId` / `revision` / `handle()` / `templateRevision` 已一并删除；兼容性改由新断言保证：**旧记录里残留的 `templateId` / `revision` 作为未知字段被忽略**，仍不需要迁移脚本。
+> **2026-09-09 更正（#28 检查阶段）**：本段原先还写着"新增 `templateId`（与实例 route key 分离，旧记录缺省回退为 `id`）"和"`revision`（供 #21 并发校验）"。**两者都只有字段，没有实现**：`provider_store` 的 save/get/remove 全部按 `template.id`（即实例 route key）定位，`templateId` 在每个写入点恒为空串，`revision` 恒为 0 且没有任何自增点，唯一读方是预览载荷里一个没人取的 `templateRevision`。
+> 并发校验真正生效的是**计划摘要 + 内容指纹**——`provider-import.test.mjs` 用"模板在预览后被改动、settings 文件始终没动"这一条把它钉死了（`PROVIDER_SETTINGS_CHANGED`，且不写一个字节）。因此 `templateId` / `revision` / `handle()` / `templateRevision` 已一并删除；兼容性改由新断言保证：**旧记录里残留的 `templateId` / `revision` 作为未知字段被忽略**，仍不需要迁移脚本。
 > 后果：§2.2 的"模板内部标识与实例 route ID 必须分离"**未按设计实现**；同日选定的出路是补 `rename_provider_template`（见本节末尾与 `TODO.md` `PROVIDER-05`），让改 ID 不再需要删除重建、也不再丢密钥。分离这个设计本身仍未做，且已被明确接受为不做。
 
 **字段归属已单源化（#12 完成，2026-09-08）**：原先 Rust 的 `profile()`/`credential_ref()`/`plan_import()` 在非测试构建中全是死代码，真实字段映射由 `provider-import.mjs` 另建一份（旧 `mjs:106,109,110,118-120`），两侧改字段归属互不跟随，而只有 .mjs 那份落进用户 Home。现在的分工是：
@@ -175,7 +176,7 @@ Schema 为 `{provider(必填), model(必填), reasoningEffort?}`（`dsh-agent-de
 ### 2.2 三条硬约束（本方案的地基）
 
 1. **`models` 与 `modelOverrides` 按模式互斥。** 跟随目录（无 `models`）→ 用 `modelOverrides`；限定模型列表（有 `models`）→ 覆盖写进对应 model 条目。后端与前端双重拦截（`PROVIDER_MODEL_OVERRIDES_CONFLICT`）。**切换模式时必须在预览中展示字段迁移与删除**（subset→all 需删 `models` 并把条目内覆盖迁入 `modelOverrides`），不能只拦"同时填写"。写错的后果是整个 `llm-pi-ai` 段被 DSH 拒绝、该 Home 下所有实例的模型层失效。
-2. **已写入实例的 route ID 不可编辑。** DSH 无别名/extends 机制（已核实全字段）。改 ID 三重后果：失去目录继承、孤立凭据引用、破坏既有会话对该 route 的引用。同一服务商加账号 → 新建自定义路由，界面明说它不再自动继承目录。**模板内部标识与实例 route ID 必须分离**（新增 `templateId`），避免模板管理与配置身份绑死。→ **未按要求实现，改为另一种满足方式（2026-09-09，#28 + `PROVIDER-05`）**：模板库至今按 route key 定位，`templateId` 从未被写入非默认值，已连同 `revision` 作为死字段删除，详见 §7。用户选定不去做"标识分离"，而是补一个 `rename_provider_template`：在同一把锁内搬那条记录、密钥跟着走，改 ID 不再需要删除重建，也不改写任何已写入实例的路由。原设计的分离收益（重命名自由）由此达成，代价是"模板 ID 与 route key 仍绑在一起"这件事被明确接受。
+2. **已写入实例的 route ID 不可编辑。** DSH 无别名/extends 机制（已核实全字段）。改 ID 三重后果：失去目录继承、孤立凭据引用、破坏既有会话对该 route 的引用。同一服务商加账号 → 新建自定义路由，界面明说它不再自动继承目录。~~模板内部标识与实例 route ID 必须分离（新增 `templateId`）~~ → **本条已改判，不再要求**（2026-09-09，#28 + `PROVIDER-05`）：模板库至今按 route key 定位，`templateId` 从未被写入非默认值，已连同 `revision` 作为死字段删除，详见 §7。用户选定不去做"标识分离"，改为补一个 `rename_provider_template`：在同一把锁内搬那条记录、密钥跟着走，改 ID 不再需要删除重建，也不改写任何已写入实例的路由。原设计的分离收益（重命名自由）由此达成，代价是"模板 ID 与 route key 仍绑在一起"这件事被明确接受。**当前唯一有效的约束是前半句：已写入实例的 route ID 不可编辑。**
 3. **模板改为判别式结构。** 旧模板一律按自定义型读取，**不因 ID 命中目录而自动转换**。用户主动转换为目录型时先展示差异。
 
 目录型模板的字段：`kind`、route `id`（须命中目录、写入后不可变，同时是模板库条目的定位键）、`name?`（缺省用目录 name）、`apiKeyEnv?`、`modelSelection: all | subset`、`models?`（仅 subset）、`modelOverrides?`（仅 all）、`overrides?`（displayName/baseURL/api 等显式覆盖，**未设即不写**）。自定义型维持现状必填。所有新字段提供 serde 默认值兼容旧配置。
@@ -197,7 +198,7 @@ Schema 为 `{provider(必填), model(必填), reasoningEffort?}`（`dsh-agent-de
   - 只有 oauth、无 `apiKey`：`openai-codex`
   - `radius` 是 0 模型的纯动态 provider，由规则的"存在可支持协议"分支自动排除
 - 首版这 11 家**只可浏览不可写入**，界面必须给出具体原因（缺端点 / 协议不支持 / 需 DSH 内登录），不得伪装成填一个 API Key 就可用。
-- **门禁必须是规则（可观测运行时事实的表达式），不是硬编码 id 清单。** 与 [AGENTS.md](../agents.md) "不新增本地硬编码清单"一致。S0 的职责是在五类样本上验证规则本身成立，不是逐一配通 39 家——避免调研范围无限扩大。
+- **门禁必须是规则（可观测运行时事实的表达式），不是硬编码 id 清单。** 与 [AGENTS.md](../AGENTS.md) "不新增本地硬编码清单"一致。S0 的职责是在五类样本上验证规则本身成立，不是逐一配通 39 家——避免调研范围无限扩大。
 - 降级：pi-ai 子路径导入失败（DSH 升级换依赖）→ 稳定错误码 `PROVIDER_CATALOG_UNAVAILABLE`，界面显示"目录不可用，仍可使用自定义接口"，**不回退到任何内置静态清单**。缓存仅进程内，keyed by `generatedAt` + 运行时路径/版本，运行时切换即失效。
 - 目录快照标识（`generatedAt` + pi-ai 版本）需在界面可见。
 
@@ -651,7 +652,7 @@ Schema 为 `{provider(必填), model(必填), reasoningEffort?}`（`dsh-agent-de
 
 **顺带补上了一条一直没人证明过的接缝**：整个凭据三态契约都压在 serde 的字段命名上，而 `ProviderDraft` **零测试调用点**。风险是静默的：`credentialMode` 哪天解析不出来，它会退化成 `None` = "添加"语义，于是"带密钥就声明引用、没带就不声明"重新生效——**正是 S4 当初要修的那个"留空被当成取消引用"**，而且不报错，只会在编辑路由时悄悄改掉引用。新增 `frontend_provider_draft_arrives_with_its_credential_intent`：拿 `provider-edit.tsx` 实际提交的那份 JSON 原样反序列化，断言三种意图各自的线上表示都被认、拼错的 `ambient` 必须被拒（`none` 是唯一改过名的变体，最容易被 `rename_all` 吃掉而不是被发现）、camelCase 集合与 `selection` 都到位、且缺省仍等于"添加"。**这条没找到缺陷，但它把一条假设变成了会被跑的断言** —— 价值在这里，不在"又绿了一项"。
 
-**补上一条"前端类型 vs 后端产物"的一致性检查**：`provider-contracts.ts` 里那些接口是对 `.mjs`/Rust 产物的**手写断言** —— TS 运行时不存在，脚本改个键名不会有任何报错，界面只会安静地读到 `undefined`。新用例反过来**以 TS 文件为准**解析出每个接口的顶层必需字段，逐个核对真实产物是否带着它们（不在测试里另抄一份键名清单，那等于再造一个会漂移的真相来源）。它顺带把一条分工钉死：`plan.sharing` 由 Rust 依注册表注入、**不在脚本产物里**，用例显式断言它缺席，免得将来脚本与宿主各算一套"谁会被影响"。限制也写进注释：只核对顶层必需字段，不下钻内联嵌套对象。
+**补上一条"前端类型 vs 后端产物"的一致性检查**：`provider-contracts.ts` 里那些接口是对 `.mjs`/Rust 产物的**手写断言** —— TS 运行时不存在，脚本改个键名不会有任何报错，界面只会安静地读到 `undefined`。新用例反过来**以 TS 文件为准**解析出每个接口的顶层必需字段，逐个核对真实产物是否带着它们（不在测试里另抄一份键名清单，那等于再造一个会漂移的真相来源）。它顺带把一条分工钉死：`plan.sharing` **不在脚本产物里**，用例显式断言它缺席，免得将来脚本与宿主各算一套"谁会被影响"——脚本交出的是计划本身，`sharing` 由 Rust 宿主依注册表算好后注入到 `plan.sharing`（见 `attach_provider_plan_sharing`）。**因此直接消费脚本输出的人拿不到 `sharing`**：`provider-contracts.ts` 把 `ProviderPlan.sharing` 声明为必需字段，而 `provider-plan-view.tsx` 对它无守卫访问，只有经过宿主的那条路径才成立（§7.2 曾把"宿主放在响应顶层、前端读 `plan.sharing`"记为已修缺陷，即此处对齐后的形状）。限制也写进注释：只核对顶层必需字段，不下钻内联嵌套对象。
 
 **关掉一个静默失败面：悬空引用**。宿主侧 `provider_planned_entry` 保证"声明引用 ⇒ 必带密钥"，但那条保证**跨过一次键名边界**（Rust 写 `"api_key"` 蛇形、`"credentialRef"` 驼峰，脚本按键名读）。哪天命名漂了，Rust 仍会算出 `apiKeyEnv`，脚本却读到 `undefined` —— 于是 `settings.yaml` 里留下一个指向凭据文件里不存在的名字的配置，**导入显示成功**，直到真正发请求才以 `MISSING_CREDENTIAL` 失败。现在 `effectiveProfile` 在写入与预览的**共同入口**上拒绝这种组合（`PROVIDER_KEY_REQUIRED`），新用例同时断言：写入端拒、预览端也拒（预览能渲染出一份 apply 会拒的计划本身就是另一种不一致）、被拒后设置文档一字未动。
 两点如实交代：**没有为它新增错误码与文案** —— 这条只在内部约束被破坏时触发，正常操作不可达，而为一个不可达分支编一句用户看得懂的话，反而制造假的确定性；沿用 `PROVIDER_KEY_REQUIRED` 时那句"请填写有效的 API Key"对此场景其实不准确，属于已知的、权衡后接受的粗糙。另外它**不会误伤合法的 `keep` / `none`** —— 前者本就不带密钥、后者由宿主把 `apiKeyEnv` 摘掉，三态那条全链路用例仍然通过。
@@ -685,7 +686,7 @@ Schema 为 `{provider(必填), model(必填), reasoningEffort?}`（`dsh-agent-de
 
 **新查到并锁住一条此前无人验证的性质：回读 → 原样应用必须是逐字节的空操作**。这是最坏一类静默数据丢失的入口 —— 用户只是打开编辑器又点了应用。做法同样是**先跑真实代码看真相**：在一次性 Home 里造一条带注释、外部段落、`headers`、路由外字段、以及模型条目内原生选项（`temperature`）的配置，回读后**只凭回读能交出的白名单键**重建 profile（因此是刻意欠指定的：只有 `id`，没有 `contextWindow`/`temperature`），再预览并应用。结果：**预览报 0 项变更、文件逐字节不变**，`temperature`、`X-Tenant`、`unknownNativeOption` 与首行注释全部在原位。这条依赖的正是"`mergeRoute` 按 id 并入既有条目"而不是整体替换 —— 若哪天改成替换，用户没碰过的原生选项会静默消失，而预览还会谎称什么都没变。它同时反证了上一轮的 `mergedValue` 修复：预览与写入对同一份欠指定输入给出同一个合并结果，才会两边都判"无变化"。回归用例 `reading back and re-applying unchanged config is a byte-identical no-op`。
 
-**检查结果（本轮真实输出）**：`pnpm test:provider` **31 passed / 0 failed / 0 skipped**（上一条记录的是 30，本轮新增这 1 条）；`pnpm lint` / `typecheck` / `build` / `cargo check` 各 exit 0；`cargo test` **134 passed / 0 failed**；`git diff --check` exit 0；中英文 **923 : 923**。
+**检查结果（本轮真实输出）**：`pnpm test:provider` **31 passed / 0 failed / 0 skipped**（上一条记录的是 30，本轮新增这 1 条）；`pnpm lint` / `typecheck` / `build` / `cargo check` 各 exit 0；`cargo test` **134 passed / 0 failed**；`git diff --check` exit 0；中英文键数已对齐（当时的绝对值见 §7.1 行内记录，权威现值见文件末尾的「文案键数」一节）。
 
 **尚未完成（本阶段不能收口）**：
 - **真实界面验证 —— 由用户明确决定"暂时跳过，先收口别的"**（记为 `TODO.md` 的 `PROVIDER-01`，P0/已实现待验证）。这不等于该验收句已满足：§2.9/§3.9 的"用户能在实例内完成添加→选模型→测试→设默认→保存回读"以及七态渲染、窄窗口无重叠、主题观感，**仍是未验证项**，只是不再挡本轮收口。机器侧能查的两条已查掉（减少动效、写死文案），纯算术的一条也修了（6 个主题白字对比度）。
@@ -693,7 +694,7 @@ Schema 为 `{provider(必填), model(必填), reasoningEffort?}`（`dsh-agent-de
 - **间距 token 已关闭**：按用户决定**不引入 token**，§3.1"内容间距"一行已就地改判并写明理由（17 处复制粘贴的重复保留原样；纯视觉重构需眼睛复核，而当前无安全验证窗口）。不再作为待办翻出。
 - **card-in-card 复查已做，结果为干净**：`SectionCard` 嵌套深度扫描零违例。**限制**：只认这一对组件，看不到 `Surface` 等非卡片容器套卡片、也看不到 portal 浮层，所以是"没发现违例"而非"证明全站合规"。
 - `.env` 与 retained refs 的呈现已补到"列出引用名 + 说明扫了设置文档与 `.env`"，但和其他界面改动一样，**未在真实界面里看过**。
-- 建议（未擅自改）：`.mimosa/` 未跟踪也不在 `.gitignore` 里，会污染 `git status`；是否加入忽略由你定。
+- `.mimosa/` 已加入 `.gitignore`（第 18 行），`git check-ignore` 命中且未被跟踪，不再污染 `git status`。本条原为"是否加入忽略由你定"的建议，现已落地。
 
 **七态覆盖无法机器核验（更正一条容易被误用的"证据"）**：本轮曾用关键词计数扫六个服务商界面文件来近似"加载/错误/空/禁用/运行中/取消中/完成"覆盖，结果不可用作结论——`provider-edit` / `provider-remove` 计数为"无加载态"只是因为它们从已回读的路由初始化、本身没有异步加载；"运行中"在这两个文件里为 0 是因为该态由父级子页持有并向它们传 `disabled`。**词频不是渲染状态。任何把这类计数当覆盖率的报告都应视为过度承诺。**
 
@@ -743,16 +744,16 @@ Schema 为 `{provider(必填), model(必填), reasoningEffort?}`（`dsh-agent-de
 | 诚实性缺陷批次不得延后于视觉重构 | #17 批次已完；检查阶段又修 3 处不实声明（`templateId`/`revision` 假字段、两处注释、一条用户文案） | 机器已证 |
 | §2.9 模板复用 / 目录继承 / 共享影响 / 冲突处理 / 未知字段保留"均有测试覆盖" | 依次：`one template entry applies to two Homes independently and survives the first import unchanged`、`returning a route to catalog inheritance…`、`config::instance::tests::sharing_counts_exclude_the_target_and_rank_profile_above_home`、`DSH import preserves unrelated settings and credentials, rejects conflicts, and explicitly replaces a route`、同上 inheritance 用例 | 机器已证 |
 | §2.9 "测试通过的配置还要在真实 DSH 实例中验证" | 同一条真机用例现在走完**验收链路的四段**：`planProviderOperations → applyProviderOperations`（带 digest/fingerprint 比对，不是直写文件）写路由 + 默认模型 → 用一次性 Home 真的启动 DSH 并通过 token 认证 → 问 DSH 自己的 `session/modelCatalog` RPC：该路由可路由且模型正是我们写入的两个 → 启动之后 `readProviders` 从磁盘解析回同一对 `provider/model`。边界仍写进注释：DSH 对 `agent-default-model` 不设校验，所以这证明的是"启动一轮后仍能解析回同一对值"，不是"DSH 认可该模型存在"。实测附带一条格式事实：写入器对**新建节点**输出流式 YAML（`agent-default-model: { provider: …, model: … }`），所以任何用正则钉缩进/花括号的断言都是把序列化风格当语义，风格一变就假失败。**目录继承也拿到了运行时证据**（同日追加）：同一条用例另写第二条路由，profile 里**只有** `displayName` + `apiKeyEnv`，启动后 DSH 自己的 `modelCatalog` 仍报得出它的模型清单，而磁盘上不含该服务商的内建端点（`doesNotMatch` 守住"没钉死"）。候选是哪条由**被安装运行时的目录答案现挑**（本机 40 个目录项，本次命中 `ant-ling`，3 个内建模型）——测试里没有本地服务商清单，DSH 换目录时它会自动改挑别的一条 | 机器已证（自动化那半）；用户实际点一遍仍是清单 1–10 |
-| §3.9 中英文一致 | `pnpm test:provider` 的 `read-back and plan JSON carry exactly the keys the frontend types require` + `every dynamically composed provider label has copy in both locales`；两份 locale 各 925 键且集合相同 | 机器已证 |
+| §3.9 中英文一致 | `pnpm test:provider` 的 `read-back and plan JSON carry exactly the keys the frontend types require` + `every dynamically composed provider label has copy in both locales`；两份 locale 键集合相同且无单侧缺失（当时的绝对值 925:925；权威现值见文件末尾「文案键数」） | 机器已证 |
 | §3.9 减少动效一致 | `grep -rn className src --include=*.tsx \| grep transition- \| grep -vc motion-reduce` → **0**（60 行全部有兜底）；例外见 DESIGN.md 的 spinner 取舍 | 机器已证；效果确认走清单 12 |
 | §3.9 多主题一致 | 18 主题的 `--launcher-on-brand` 按 WCAG 相对亮度逐主题取值，最低对比度 4.19:1 | 机器已证（算式）；肉眼确认走清单 9 |
 | 图标按钮必须有可读名称（`AGENTS.md`「陌生图标按钮需有 `aria-label`/tooltip」） | 逐 `<Button>` 标签（含跨行与 `isIconOnly`）核对全应用 25 个纯图标按钮：**25/25 有 `aria-label`/`title`/Tooltip**。此前 `debug-sidebar.tsx` 日志面板的复制/刷新/**清空**三个没有名字（清空还是破坏性动作），已补齐——用的正是仓库里早已写好却从未被引用的 `buttons.copy` / `buttons.refresh_logs` / `buttons.clear_logs` | 机器已证（0 缺名）；修复效果走清单 12 之外另看 |
-| 未被引用的文案 | 保守扫描（键名作为字符串字面量出现即算引用 + 25 个真实动态前缀）：929 个键里 **66 个无任何引用**。其中 4 个是本轮服务商重构遗留的旧标签（`providers.imported` / `providers.description` / `providers.remove` / `providers.model`），已连同中英两份一并删除（现 925:925 且集合相同）；其余 ~62 个（`app.*` / `status.*` / `plugins.*` 等）早于本轮，**只登记不擅删**，见 `TODO.md` `I18N-01` | 机器已证（删除的部分）；余量待决定 |
+| 未被引用的文案 | 保守扫描（键名作为字符串字面量出现即算引用 + 25 个真实动态前缀）：本轮扫描时共 929 个键，其中 **66 个无任何引用**。本轮服务商重构遗留的 4 个旧标签（`providers.imported` / `providers.description` / `providers.remove` / `providers.model`）已连同中英两份一并删除（删后 925:925 且集合相同）；其余约 62 个（`app.*` / `status.*` / `plugins.*` 等）早于本轮，**只登记不擅删**，见 `TODO.md` `I18N-01`。**以上是本轮扫描时的历史计数**；后续改动使键数继续增长，权威现值见文件末尾「文案键数」 | 机器已证（删除的部分）；余量待决定 |
 | IPC 命令面与前端调用是否一致 | 对账 `builder.rs` 的 `generate_handler![…]`（闭合于第 428 行，共 **85** 条）与 `src` 里全部 `invoke('name')`（**80** 条）：**没有任何一处前端调用指向未注册的命令**（这类错误只会在运行时炸，`tsc` 与 `cargo` 都看不见）。反向查出 4 条已注册但前端不调用的命令，其中 `install_plugin_packages` **违反 §2 边界的实例绑定要求**（写入 `config::instance::active()` 而非显式 `instance_id`），已登记 `TODO.md` `PLG-CMD-01` 待决定；`toggle_sidebar` 按其自带注释属有意保留。**抽取陷阱记此以免误读该结论**：`invoke<Record<string, number>>('…')` 这类泛型里带 `>` 的写法会让朴素正则漏判（曾因此把 `get_running_instance_ports` 误报成无调用方），而按固定行区间统计又会读到宏结束之后的代码（曾因此把注册数算成 92） | 机器已证（正向 0 处不一致）；反向余量待决定 |
 
 **§3.1 / §3.3 逐条复验（同日）**。这两张表写于升级之前，里面的行号和"代码里仍存在"的说法现在都已过期，所以按当前源码逐条重测，不靠记忆。确认已修掉的：**页级标题** `text-2xl` 6 处 → **0 处**；**个性化保存失败被空 catch 吞掉** → 现在由 `save.run` 承接并驻留展示，剩下的那个 `.catch(() => {})` 旁边写明了它只挡未处理的 Promise 拒绝、不是吞反馈；**更新页 `checkError` 从不渲染** → 现在走 `ErrorBanner`；**日志页无刷新无清空** → 两者都在，且清空是 `more_logs.clear_view`"只清显示、不删日志文件"，与 DESIGN 的区分一致；**启动概览与托盘无"停止中"** → `launcher.instance_status.stopping` 两处都在；**托盘绕过 launcher store 直接 `launch_instance_window`** → 现在走 `store.launcher.stopInstance` 并把失败映射成可读文案（不再原样抛后端码）。
 
-**复验时新发现并修掉一个真缺陷**（个性化页，非服务商模块）：读配置的 `.catch(() => {})` 让页面在**读取失败时**静默落到组件默认值，而 `update_app_config` 是**一次带走全部五个字段的整份写入**——用户在这种状态下拨动任意一个开关，就会把其余没读到的设置一起写回默认值，且界面上毫无提示。现在读取失败会显示原因（"保存已停用…保存会把没读到的项一起改回默认"）并拒绝保存，横幅带"重试"重新读取；`load()` 成功后自动解除。中英文各补一条 `launcher.personalization.load_failed`（两份 926:926、键集合相同）。**这条的验证只到代码级**：要复现得让一次 IPC 读取失败，不是点得出来的路径，所以没写进界面清单，也不声称做过真机确认。
+**复验时新发现并修掉一个真缺陷**（个性化页，非服务商模块）：读配置的 `.catch(() => {})` 让页面在**读取失败时**静默落到组件默认值，而 `update_app_config` 是**一次带走全部五个字段的整份写入**——用户在这种状态下拨动任意一个开关，就会把其余没读到的设置一起写回默认值，且界面上毫无提示。现在读取失败会显示原因（"保存已停用…保存会把没读到的项一起改回默认"）并拒绝保存，横幅带"重试"重新读取；`load()` 成功后自动解除。中英文各补一条 `launcher.personalization.load_failed`（当时的键数为 926:926、键集合相同；权威现值见文件末尾「文案键数」）。**这条的验证只到代码级**：要复现得让一次 IPC 读取失败，不是点得出来的路径，所以没写进界面清单，也不声称做过真机确认。
 
 **这张表也会过期。** 复核方式：`cargo test -- --list` 与 `node --test` 的用例名若与表中不符，或表里任一名字在输出中消失，就说明实现或文档已经移动，须重跑本节全部命令——不要把这张表当成"已验收"的替身。
 
@@ -773,3 +774,15 @@ Schema 为 `{provider(必填), model(必填), reasoningEffort?}`（`dsh-agent-de
 - 2026-09-10 验证：TypeScript、定向 ESLint、构建通过；服务商测试 36 通过 / 0 跳过。Chrome 通过 IPv6 loopback 渲染真实组件、使用隔离 IPC 测试数据，检查 1348×810 与 700×740 布局、中英文、库到目标实例的预览/应用、独立编辑与直接添加、长预览操作可达性、模板保存失败后的重试与返回。
 - 编辑及添加的预览独立展示，统一预览按变更前/后分列、长模型逐行显示，操作区留在预览滚动区外。预览/应用期间锁定模块内的目标和模式切换。
 - 验证边界：浏览器组件回归使用模拟 IPC，没有写入用户实例或密钥；后端契约由真实运行时参与的服务商测试覆盖。本轮未进行原生 WebView 窗口的端到端点击验收，不将浏览器结果描述为原生实测。
+
+### 文案键数（本文件的唯一权威值）
+
+本节以上各处出现的 923 / 925 / 926 / 929 都是**当时那次扫描的历史计数**，不要当作现状引用。
+
+- **当前实测：`zh-CN.json` 与 `en-US.json` 各 952 个键，`only-zh` 与 `only-en` 均为 0，无重复键。**
+- 复核命令（键名只出现在行首的扁平 JSON 结构下可靠）：
+  ```powershell
+  (Select-String -Path src/i18n/locales/zh-CN.json -Pattern '^\s*"([^"]+)":' -AllMatches).Matches.Count
+  (Select-String -Path src/i18n/locales/en-US.json -Pattern '^\s*"([^"]+)":' -AllMatches).Matches.Count
+  ```
+- 计数会随每次文案改动变化，所以**只在交付说明里写当次实测值，并同时更新本节**；不要在各处散写新的绝对值。

@@ -1,6 +1,6 @@
 # DSH Launcher 架构与数据边界
 
-核对基线：v0.0.9 源码（版本元数据已升，tag 与发行包尚未产出）；已发布的 v0.0.8 二进制不含本轮数据安全修复。本文由原 LAUNCHER_V1.md 整理而来。开发约束以根目录 [AGENTS.md](../AGENTS.md) 为入口；调用协议见 [IPC_CONTRACTS.md](IPC_CONTRACTS.md)，发布见 [RELEASING.md](RELEASING.md)。文中约束与当前实现差距见 [TODO](../TODO.md)，附属清理仍是 [待实施方案](INSTANCE_CLEANUP_PLAN.md)。
+核对基线：v0.0.10 源码（tag 与发行包均已产出，见 [发布检查](RELEASING.md)）；开发分支工作区另有未提交改动，行为以当前代码为准。本文由原 LAUNCHER_V1.md 整理而来。开发约束以根目录 [AGENTS.md](../AGENTS.md) 为入口；调用协议见 [IPC_CONTRACTS.md](IPC_CONTRACTS.md)，发布见 [RELEASING.md](RELEASING.md)。文中约束与当前实现差距见 [TODO](../TODO.md)，附属清理仍是 [待实施方案](INSTANCE_CLEANUP_PLAN.md)。
 
 ## 目标
 

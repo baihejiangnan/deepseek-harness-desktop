@@ -150,7 +150,11 @@ pub fn register_path(app_handle: &AppHandle) -> Result<(), String> {
         let bin_str = bin_dir
             .to_str()
             .ok_or_else(|| "bin dir is not valid UTF-8".to_string())?;
-        let current = read_user_path().unwrap_or_default();
+        // 读取失败必须中止：把它当成"PATH 为空"会把用户的整个用户级 PATH
+        // 覆盖成只剩本应用的 bin 目录。None 专指读取失败；"变量确实不存在"
+        // 由 read_user_path 返回 Some(String::new()) 表达。
+        let current = read_user_path()
+            .ok_or_else(|| "failed to read user PATH from HKCU\\Environment".to_string())?;
         let new_value = if current.trim().is_empty() {
             bin_str.to_string()
         } else {
@@ -175,15 +179,17 @@ pub fn unregister_path(app_handle: &AppHandle) -> Result<(), String> {
         let Some(bin_str) = bin_dir.to_str() else {
             return Ok(());
         };
-        if let Some(current) = read_user_path() {
-            if !path_contains_token(&current, bin_str) {
-                return Ok(());
-            }
-            let new_value = remove_path_token(&current, bin_str);
-            write_user_path(&new_value)?;
-            notify_environment_change();
-            log::info!("Removed dsh bin dir from user PATH");
+        // 读取失败不能报成功：那会让用户以为已经移除，实际 PATH 原样未动。
+        let Some(current) = read_user_path() else {
+            return Err("failed to read user PATH from HKCU\\Environment".to_string());
+        };
+        if !path_contains_token(&current, bin_str) {
+            return Ok(());
         }
+        let new_value = remove_path_token(&current, bin_str);
+        write_user_path(&new_value)?;
+        notify_environment_change();
+        log::info!("Removed dsh bin dir from user PATH");
     }
     #[cfg(not(windows))]
     {

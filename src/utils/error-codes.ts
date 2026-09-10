@@ -63,6 +63,7 @@ const MESSAGE_KEYS: Record<string, string> = {
   DSH_RUNTIME_BUSY: 'errors.dsh_runtime_busy',
   DSH_RUNTIME_IN_USE: 'errors.dsh_runtime_in_use',
   DSH_RUNTIME_NOT_FOUND: 'errors.dsh_runtime_not_found',
+  DSH_RUNTIME_STOP_FAILED: 'errors.dsh_runtime_stop_failed',
   DSH_RUNTIME_UPDATE_UNSUPPORTED: 'errors.dsh_runtime_update_unsupported',
   INSTANCE_NOT_FOUND: 'errors.instance_not_found',
   INSTANCE_RUNNING: 'errors.instance_running',

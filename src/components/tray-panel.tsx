@@ -18,7 +18,7 @@ interface Appearance {
 
 export default function TrayPanel() {
   const { t } = useTranslation()
-  const { loading, registry, runningInstanceIds, runningInstancePorts, busyInstanceId, installProgress } = useStore(store.launcher)
+  const { loading, registry, runningInstanceIds, runningInstancePorts, busyInstanceId, busyInstanceAction, installProgress } = useStore(store.launcher)
   const [appearance, setAppearance] = useState<Appearance>({ theme: 'mist-blue-sakura-pink' })
   const [error, setError] = useState('')
   const [errorDetail, setErrorDetail] = useState('')
@@ -159,7 +159,7 @@ export default function TrayPanel() {
     // 停止后保留面板，让这一行从「正在运行」移到「可启动」的过程可见。
   }
 
-  const launching = busyInstanceId != null && !runningInstanceIds.includes(busyInstanceId)
+  const launching = busyInstanceAction === 'launching'
 
   return (
     <div className={`tray-panel launcher-theme launcher-theme-${appearance.theme} flex h-full min-h-0 w-full flex-col overflow-hidden text-[var(--launcher-ink)]`}>
@@ -212,13 +212,14 @@ export default function TrayPanel() {
           {!loading && running.length === 0 && <TrayEmpty>{t('tray.no_running')}</TrayEmpty>}
           {running.map((instance) => {
             const busy = busyInstanceId === instance.id
+            const stopping = busy && busyInstanceAction === 'stopping'
             return (
               <InstanceRow
                 key={instance.id}
                 instance={instance}
                 running
-                busy={busy}
-                statusLabel={busy ? t('launcher.instance_status.stopping') : t('launcher.instance_status.running')}
+                busy={stopping}
+                statusLabel={stopping ? t('launcher.instance_status.stopping') : busy ? t('launcher.instance_status.booting') : t('launcher.instance_status.running')}
                 port={runningInstancePorts[instance.id]}
                 actionLabel={t('tray.switch_to', { name: instance.name })}
                 onAction={() => { void focusInstance(instance) }}
@@ -232,7 +233,7 @@ export default function TrayPanel() {
         <TraySection title={t('tray.available_title')} count={available.length}>
           {!loading && available.length === 0 && <TrayEmpty>{t('tray.no_available')}</TrayEmpty>}
           {available.map((instance) => {
-            const busy = busyInstanceId === instance.id
+            const busy = busyInstanceId === instance.id && busyInstanceAction === 'launching'
             return (
               <InstanceRow
                 key={instance.id}

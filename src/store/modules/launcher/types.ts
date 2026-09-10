@@ -32,3 +32,5 @@ export interface InstanceRemovalImpact {
 }
 
 export type LauncherView = 'launcher' | 'dsh'
+
+export type InstanceBusyAction = 'launching' | 'stopping'
