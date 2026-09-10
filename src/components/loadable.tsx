@@ -101,7 +101,7 @@ export default function Loadable({
             {percentage != null && (
               <div className="flex items-center gap-3">
                 <div className="h-2 flex-1 overflow-hidden rounded-full bg-panel2" role="progressbar" aria-valuenow={Math.round(percentage)}>
-                  <div className="h-full bg-gradient-to-r from-accent to-accent2 transition-[width] duration-150" style={{ width: `${Math.min(percentage, 100)}%` }} />
+                  <div className="h-full bg-gradient-to-r from-accent to-accent2 transition-[width] duration-150 motion-reduce:transition-none" style={{ width: `${Math.min(percentage, 100)}%` }} />
                 </div>
                 <span className="min-w-[44px] text-right text-[13px] font-semibold tabular-nums text-accent2">
                   {Math.round(percentage)}

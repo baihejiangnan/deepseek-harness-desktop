@@ -226,7 +226,7 @@ export default function Navbar({ iframeRef }: NavbarProps) {
       </Button>
 
       <Button
-        className="rounded-lg size-7 transition-colors enabled:hover:bg-danger/16 enabled:hover:text-danger"
+        className="rounded-lg size-7 transition-colors motion-reduce:transition-none enabled:hover:bg-danger/16 enabled:hover:text-danger"
         isIconOnly
         size="sm"
         variant="ghost"

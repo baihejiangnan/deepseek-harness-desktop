@@ -72,12 +72,18 @@ export function DebugSidebar(props: PropsWithChildren) {
       await refreshLogs()
       toast(t('messages.logs_cleared'), {})
     },
+    onError: (error) => {
+      toast(t('messages.save_failed'), { variant: 'danger', description: String(error) })
+    },
   })
 
   const { mutate: onToggleCliLink } = useMutation({
     mutationFn: async (enabled: boolean) => {
       await invoke<AppConfig>('update_app_config', { cliLinkEnabled: enabled })
       await refreshCliStatus()
+    },
+    onError: (error) => {
+      toast(t('messages.save_failed'), { variant: 'danger', description: String(error) })
     },
   })
 
@@ -197,7 +203,7 @@ export function DebugSidebar(props: PropsWithChildren) {
                   <InfoRow term={t('ui.dsh_version')}>
                     <span>{info?.dsh_version ?? '-'}</span>
                     <If cond={updateInfo}>
-                      <Link className="ml-2 text-[10px] text-[rgb(65,118,230)]" onClick={store.updater.showToast}>
+                      <Link className="ml-2 text-xs text-[rgb(65,118,230)]" onClick={store.updater.showToast}>
                         存在新版本
                         <ChevronRight className="scale-75" />
                       </Link>
@@ -249,13 +255,13 @@ export function DebugSidebar(props: PropsWithChildren) {
                       <If
                         cond={!cliStatus.user_dsh_preserved}
                         else={(
-                          <Description className="text-[10px] text-muted/70">
+                          <Description className="text-xs text-muted/70">
                             {t('ui.cli_link_user_dsh_preserved')}
                           </Description>
                         )}
                       >
-                        <Description className="text-[10px] text-muted/70">{cliStatus.bin_dir}</Description>
-                        <Description className="text-[10px] text-muted/70">
+                        <Description className="text-xs text-muted/70">{cliStatus.bin_dir}</Description>
+                        <Description className="text-xs text-muted/70">
                           {t('ui.cli_link_hint')}
                         </Description>
                       </If>
@@ -317,6 +323,7 @@ export function DebugSidebar(props: PropsWithChildren) {
                       size="sm"
                       className="rounded-md size-6"
                       variant="ghost"
+                      aria-label={t('buttons.copy')}
                       onPress={async () => {
                         await navigator.clipboard.writeText(logs || '')
                         toast(t('messages.logs_copied'), {})
@@ -329,6 +336,7 @@ export function DebugSidebar(props: PropsWithChildren) {
                       size="sm"
                       className="rounded-md size-6"
                       variant="ghost"
+                      aria-label={t('buttons.refresh_logs')}
                       onPress={() => refreshLogs()}
                     >
                       <ArrowRotateRight className="scale-80" />
@@ -338,6 +346,7 @@ export function DebugSidebar(props: PropsWithChildren) {
                       size="sm"
                       className="rounded-md size-6"
                       variant="ghost"
+                      aria-label={t('buttons.clear_logs')}
                       onPress={() => onClearLogs()}
                     >
                       <TrashBin className="scale-80" />

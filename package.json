@@ -1,7 +1,7 @@
 {
   "name": "dsh-launcher",
   "type": "module",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "private": true,
   "description": "Multi-instance desktop launcher for DeepSeek Harness (dsh).",
   "scripts": {
@@ -13,6 +13,7 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "typecheck": "tsc --noEmit",
+    "test:provider": "node --test src-tauri/src/service/provider-import.test.mjs src-tauri/src/service/provider-probe.test.mjs",
     "icons": "tauri icon public/favicon.svg"
   },
   "dependencies": {

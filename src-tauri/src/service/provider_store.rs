@@ -168,28 +168,61 @@ pub(crate) fn get(path: &Path, id: &str) -> Result<StoredProvider, String> {
         .ok_or("PROVIDER_NOT_FOUND".into())
 }
 
+/// 重命名一条模板的 route key。密钥与其余字段留在**同一条记录**上，用户不必重新录入。
+///
+/// 这只改启动器模板库：已经写进实例的路由用的是实例自己的 dict key，
+/// 既不会被改写，也不会被删除——之后再次应用这条模板才会写入新 key。
+pub fn rename(path: &Path, from: &str, to: &str) -> Result<(), String> {
+    let _guard = STORE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut entries = read(path)?;
+    let index = entries
+        .iter()
+        .position(|entry| entry.template.id == from)
+        .ok_or("PROVIDER_NOT_FOUND")?;
+    if entries.iter().any(|entry| entry.template.id == to) {
+        return Err("PROVIDER_ID_CONFLICT".into());
+    }
+    let mut template = entries[index].template.clone();
+    template.id = to.to_string();
+    // 新 key 走与保存完全相同的规则：字符集、长度、保留 ID 一个都不为"重命名"放宽。
+    template.validate()?;
+    entries[index].template = template;
+    write(path, &entries)
+}
+
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
-    #[test]
-    fn encrypted_store_roundtrip_edit_and_remove() {
-        let path = std::env::temp_dir().join(format!(
-            "dsh-provider-test-{}-{}.bin",
+
+    /// 每个用例一份独立的临时库文件，避免并行用例互相覆盖。
+    fn temp_store(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "dsh-provider-{}-{}-{}.bin",
+            tag,
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let mut template = ProviderTemplate {
-            id: "test-route".into(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ))
+    }
+
+    fn route(id: &str) -> ProviderTemplate {
+        ProviderTemplate {
+            id: id.into(),
             name: "Test".into(),
+            kind: crate::service::providers::ProviderTemplateKind::Custom,
             base_url: "https://example.com/v1".into(),
             protocol: "openai-completions".into(),
             model_id: "test-model".into(),
             models: vec![],
+            model_overrides: vec![],
+            selection: crate::service::providers::ProviderModelSelection::All,
             default_for_new: false,
-        };
+        }
+    }
+
+    #[test]
+    fn encrypted_store_roundtrip_edit_and_remove() {
+        let path = temp_store("roundtrip");
+        let mut template = route("test-route");
         save(&path, template.clone(), Some("secret-test-key".into()), false).unwrap();
         assert_eq!(save(&path, template.clone(), Some("replacement".into()), false).unwrap_err(), "PROVIDER_ID_CONFLICT");
         assert!(
@@ -203,6 +236,29 @@ mod tests {
         remove(&path, "test-route").unwrap();
         assert_eq!(save(&path, template, Some("replacement".into()), true).unwrap_err(), "PROVIDER_NOT_FOUND");
         assert!(list(&path).unwrap().is_empty());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// 重命名的全部价值在于"换 key 不换记录"：密钥留在同一条条目上跟着走，
+    /// 用户不必为了改个名字先删掉模板再重新录入。
+    #[test]
+    fn rename_moves_the_record_and_keeps_the_credential() {
+        let path = temp_store("rename");
+        save(&path, route("old-route"), Some("carry-me".into()), false).unwrap();
+        save(&path, route("taken-route"), Some("other-key".into()), false).unwrap();
+
+        // 四种拒绝都必须发生在写盘之前，库里的两条记录一条都不许动。
+        assert_eq!(rename(&path, "old-route", "taken-route").unwrap_err(), "PROVIDER_ID_CONFLICT");
+        assert_eq!(rename(&path, "ghost", "anything").unwrap_err(), "PROVIDER_NOT_FOUND");
+        assert_eq!(rename(&path, "old-route", "Bad Key!").unwrap_err(), "PROVIDER_ID_INVALID");
+        assert_eq!(rename(&path, "old-route", "deepseek-official").unwrap_err(), "PROVIDER_ID_RESERVED");
+        let ids = |path: &std::path::Path| list(path).unwrap().into_iter().map(|item| item.id).collect::<Vec<_>>();
+        assert_eq!(ids(&path), ["old-route", "taken-route"]);
+
+        rename(&path, "old-route", "renamed-route").unwrap();
+        assert_eq!(get(&path, "renamed-route").unwrap().api_key, "carry-me");
+        assert!(get(&path, "old-route").is_err());
+        assert_eq!(get(&path, "taken-route").unwrap().api_key, "other-key");
         std::fs::remove_file(path).unwrap();
     }
 }

@@ -11,6 +11,7 @@
 - [视觉规范](docs/DESIGN.md)：主题、布局、交互状态和视觉回归。
 - [开发说明](docs/DEVELOPMENT.zh.md) / [English](docs/DEVELOPMENT.md)：环境、命令和回归清单。
 - [发布检查](docs/RELEASING.md)、[当前待办](TODO.md)、[附属清理方案](docs/INSTANCE_CLEANUP_PLAN.md)。
+- [服务商与界面升级执行基线](docs/PROVIDER_UI_UPGRADE_PLAN.md)：该模块的设计决定、阶段表、逐项落地状态与**尚未验证项**。改服务商模块前先读它的边界与验收段。
 
 本文保留强制约束，详细说明由对应文档维护。行为/协议/数据流变化时同步相关文档；待办标明待实现、待验证与验收条件，不把过程记录或旧交接当作完成证据。
 
@@ -58,7 +59,12 @@
 ## 模型服务商与修复助手
 
 - 修复助手使用独立 Home；故障实例的日志、Home、Profile 和核心版本是诊断材料，不能填作助手自身配置。复制提示词入口应保留。
-- 服务商模板支持多个模型；导入显式绑定实例，保护共享 Home、现有配置和凭据。测试连接、获取模型分别展示处理中、成功、失败反馈；测试调用可能产生用量，提示应可见。
+- 服务商模板支持多个模型；写入显式绑定实例，保护共享 Home、现有配置和凭据。四条写入路径（模板导入、实例内添加、编辑、移除）共用**一条 预览 → 应用** 流程与**一份**预览渲染：提交的是操作意图，不接受前端拼的 diff；应用在锁内重算，**计划摘要或文档内容指纹任一失配即中止**，必须重新预览。
+- 目录型路由只写用户显式设置的字段，`api` / `baseURL` / `models` 未设省时省略，以便跟随 DSH 的目录升级；写入实例的 route ID 不可修改。模板库条目没有独立于 route key 的内部标识，改 ID 走 `rename_provider_template`：在同一把锁内搬那条记录、密钥跟着走，且**不会**改写任何已写入实例的路由。
+- 密钥意图必须显式三选一（保留 / 替换 / 取消引用改走环境认证），"留空"不得同时承担两种语义。**删除服务商不删已存凭据**；引用扫描覆盖整份 settings 文档与 `$DSH_HOME/.env`，只报引用名不报值。
+- 非模板自有字段（尤其 `headers`）的值不回传前端，写入时在 YAML 文档上原地保留；能力门禁必须是"对可观测运行时事实求值"的规则，不得新增本地硬编码服务商清单，未通过当前运行时核对的目录项只可浏览并显示原因。
+- 测试连接的请求由当前选中运行时的适配器构造，启动器不自行拼 URL；自定义接口的模型清单只对运行时支持的协议开放。测试调用可能产生用量，提示应可见。
+- 详细契约见 [Tauri 接口契约](docs/IPC_CONTRACTS.md) 与执行基线 `docs/PROVIDER_UI_UPGRADE_PLAN.md`；内嵌脚本经 `include_str!` 编进二进制，改 `.mjs` 需重新编译并重启。
 - 中英文切换默认中文，后续启动的 DSH 实例同步语言；不通过改写 DSH 原生业务实现同步。列表沿用悬浮分页、滚动与边界禁用行为。
 
 ## 发布与下载
@@ -130,6 +136,7 @@ dsh plugin --profile web add <spec>
 - 卡片圆角保持克制（通常 `rounded-md`）；不要卡片套卡片，不要用营销式大标题或装饰性渐变球。
 - 固定工具栏、分页、角标和图标按钮应有稳定尺寸，动态文字不能推动布局。窄窗口下文字必须换行或截断，不得溢出重叠。
 - 用户可见文本不得硬编码。同步修改 `src/i18n/locales/zh-CN.json` 与 `en-US.json`，key 使用扁平点号形式。
+- `t(\`prefix.${后端决定的码值}\`)` 这类动态拼 key 静态扫描看不见，缺一条文案会把 `PROVIDER_CATALOG_*` 这类原始码值直接印到界面上。服务商的四个命名空间（错误码分组、目录限制码、预览变更类型、凭据动作）由 `pnpm test:provider` 里 `every dynamically composed provider label has copy in both locales` 从**产码的一方**抽值域逐条核对，测试里不抄清单；新增这类调用时同步扩产码方与两份文案，或扩展该测试的抽取来源。导航、主题等非服务商命名空间目前只被手工核对过，尚未钉住。
 - 沿用所在文件的条件渲染风格；不要为了统一形式机械改写 `react-if-lite` 或 JSX 条件。
 - React Compiler 已启用。不要例行添加 `useMemo`/`useCallback`；仅在派生列表、引用稳定性或已确认性能需求时使用。
 
@@ -149,6 +156,8 @@ dsh plugin --profile web add <spec>
 
 - `src/components/launcher-shell.tsx`：顶部导航、启动器主题和全局更新反馈。
 - `src/components/instance-manager.tsx`、`instance-settings.tsx`：实例概览、折叠列表、环境、插件和导出。
+- `src/components/launcher-ui.tsx`：共享界面原语（`SectionCard`、`ErrorBanner`、`StatusBadge`、`StatusNotice`、`TextInput`），新页面优先复用而不是再画一套。
+- `src/components/instance-providers.tsx` 与 `provider-add.tsx`、`provider-edit.tsx`、`provider-remove.tsx`、`provider-import.tsx`、`provider-templates.tsx`：实例"模型服务商"子页及添加、编辑、移除、模板导入入口。四条写入路径共用 `provider-plan-view.tsx` 一份预览渲染和 `provider-contracts.ts` 一份契约类型，**新入口沿用它们，不要再写第五套详细程度不同的预览**。
 - `src/components/download-center.tsx`：社区插件、插件包、已安装插件、日志、进度和分页。
 - `src/components/collaboration-panel.tsx`：协作工作流、编排画布、节点调度、任务交接和运行状态。
 - `src/components/more-panel.tsx`、`tray-panel.tsx`：更多页面和托盘面板。
@@ -161,6 +170,7 @@ dsh plugin --profile web add <spec>
 - `src-tauri/src/service/plugin/`：目录、清单、安装、取消、日志、`allowBuilds` 和已安装插件。
 - `src-tauri/src/service/update/`、`download/`：DSH 更新、下载、摘要和事务替换。
 - `src-tauri/src/service/export.rs`：Profile/会话选择性导出和完整 Home 备份。
+- `src-tauri/src/service/providers.rs`、`provider_store.rs` 与内嵌脚本 `provider-import.mjs`、`provider-catalog.mjs`、`provider-probe.mjs`：服务商模板、凭据存储、运行时目录探测与写入。Profile 路径解析、Home 越界与符号链接拒绝、凭据文档形态校验、锁内读写和内容指纹**只在 `provider-import.mjs` 定义一次**，另起一份脚本等于把安全规则复制一份。这些 `.mjs` 经 `include_str!` 编进二进制，**改动后必须重新编译并重启 `pnpm tauri dev`**，热更新不会带到已运行窗口。
 
 ## 开发与验证
 
@@ -172,6 +182,7 @@ pnpm dev
 pnpm typecheck
 pnpm lint
 pnpm build
+pnpm test:provider
 pnpm tauri dev
 ```
 
@@ -183,7 +194,9 @@ cargo test
 ```
 
 - 前端改动至少运行 `pnpm typecheck` 和修改文件的 ESLint；共享页面或构建配置改动再运行 `pnpm build`。
+- 服务商内嵌脚本用 `pnpm test:provider`。它的集成与委托类用例在解析不到真实 DSH 运行时会**自我 skip 却仍报告成功**，贴结论必须连 `skipped` 计数一起给，只有 `skipped 0` 才算跑过；显式指定用 `DSH_TEST_ENTRY=<dsh 包>/lib/bin.js`。
 - Rust 改动至少运行 `cargo check`；业务模块需运行对应定向测试，高风险跨模块改动运行 `cargo test`。
+- 改动任一 `--launcher-brand` 色值时按 WCAG 相对亮度重算该主题的 `--launcher-on-brand`（取白与近黑墨色中对比度更高者）。这项是纯算术，不必开界面就能验证，别留白字给浅色品牌底。
 - 提交前运行 `git diff --check`，并用 `git diff --stat`/定向 diff 确认未改写无关文件。
 - `cargo fmt --all -- --check` 可能暴露仓库既有格式差异；不要因此批量格式化用户改动。优先检查和格式化本次文件。
 - Rust 后端不会像前端一样可靠热更新到已运行窗口。涉及 command、窗口、托盘、进程或插件安装后端时，完成编译后应重启 `pnpm tauri dev` 再手动验证。
@@ -197,6 +210,10 @@ cargo test
 - 写操作是否绑定明确 `instance_id`，并保护运行实例与共享 Home？
 - 两种移除操作是否遵守保留文件或删除 Home 的不同承诺，并正确处理导出提示和受影响实例？
 - 插件是否使用社区原始 spec 和 DSH 原生命令，Profile 是否映射到目标实例？
+- 服务商写入是否只走"预览 → 应用"一条路、提交的是操作意图而非前端拼的 diff，并在锁内比对计划摘要与文档内容指纹（任一失配即中止）？
+- 是否确认凭据值与非模板自有字段（尤其 `headers`）的值没有回传前端，删除服务商没有自动删除已存凭据，引用扫描仍覆盖整份 settings 文档与 `$DSH_HOME/.env`？
+- 能力门禁是否仍只对可观测运行时事实求值、没有新增本地硬编码服务商清单，未通过当前运行时核对的目录项是否只读并显示原因？
+- 改动内嵌 `.mjs` 后是否重新编译并重启 `pnpm tauri dev` 再验收？（`include_str!` 让它不会随热更新进已运行窗口。）
 - 协作任务是否绑定明确实例、遵守依赖顺序和共享 Home 互斥，并只使用已确认健康的实际端口？
 - 主代理模式是否先分配端口并成功写入工作区契约，自动流水线是否只交接真实完成的上游产物？
 - 是否提供真实进度、取消、错误状态和完整日志复制？

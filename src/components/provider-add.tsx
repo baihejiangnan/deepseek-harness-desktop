@@ -4,7 +4,7 @@ import type { ProviderTemplate } from './provider-templates'
 import { Plus } from '@gravity-ui/icons'
 import { Button } from '@heroui/react'
 import { invoke } from '@tauri-apps/api/core'
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { providerErrorMessage } from '@/utils/provider-error'
 import { useSaveStatus } from '@/utils/save-status'
@@ -18,10 +18,10 @@ function emptyDraft(): ProviderTemplate {
   return { id: '', name: '', baseUrl: '', protocol: '', modelId: '', models: [], modelOverrides: [], selection: 'all', defaultForNew: false, kind: 'catalog' } as ProviderTemplate
 }
 
-export default function ProviderAdd({ instanceId, disabled, onApplied }: { instanceId: string, disabled: boolean, onApplied: () => void }) {
+export default function ProviderAdd({ instanceId, disabled, onApplied, initialOpen = false, onBusy }: { instanceId: string, disabled: boolean, onApplied: () => void, initialOpen?: boolean, onBusy?: (busy: boolean) => void }) {
   const { t } = useTranslation()
   const save = useSaveStatus({ holdMs: 0 })
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(initialOpen)
   const [catalog, setCatalog] = useState<CatalogProvider[] | null>(null)
   const [catalogError, setCatalogError] = useState('')
   const [draft, setDraft] = useState<ProviderTemplate>(() => emptyDraft())
@@ -39,6 +39,24 @@ export default function ProviderAdd({ instanceId, disabled, onApplied }: { insta
   const [failure, setFailure] = useState('')
   const [templateSaveFailed, setTemplateSaveFailed] = useState(false)
   const modelRequestRef = useRef(0)
+
+  useEffect(() => {
+    if (!initialOpen)
+      return
+    let cancelled = false
+    void invoke<CatalogResponse>('list_runtime_catalog').then((result) => {
+      if (!cancelled)
+        setCatalog(result.providers)
+    }).catch((error: unknown) => {
+      if (!cancelled) {
+        setCatalogError(providerErrorMessage(error))
+        setCatalog([])
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [initialOpen])
 
   const catalogById = useMemo(() => new Map((catalog ?? []).map(item => [item.id, item])), [catalog])
   const chosen = catalogById.get(draft.id)
@@ -184,15 +202,19 @@ export default function ProviderAdd({ instanceId, disabled, onApplied }: { insta
 
   const ready = writable && draft.name.trim() !== '' && (draft.selection === 'all' || draft.models.length > 0) && !(useDefaultModel && defaultModelId === '')
 
-  async function run<T>(task: () => Promise<T>, onDone: (value: T) => void) {
+  async function run<T>(task: () => Promise<T>, onDone: (value: T) => void | Promise<void>) {
     setFailure('')
+    onBusy?.(true)
     try {
       await save.run(async () => {
-        onDone(await task())
+        await onDone(await task())
       })
     }
     catch (error) {
       setFailure(providerErrorMessage(error))
+    }
+    finally {
+      onBusy?.(false)
     }
   }
 
@@ -208,33 +230,51 @@ export default function ProviderAdd({ instanceId, disabled, onApplied }: { insta
       return
     return run(
       () => invoke<PlanResponse>('apply_instance_provider_change', { instanceId, templateIds: [], drafts: [{ template: buildDraft(), apiKey }], routeIdsToRemove: [], defaultModel: chosenDefault, digest: preview.digest, fingerprint: preview.fingerprint }),
-      () => {
+      async () => {
         setPreview(null)
         setOpen(false)
         setTemplateSaveFailed(false)
-        onApplied()
-        // 模板入库是独立存储：失败只影响这一项，不回滚已应用的实例配置。
         if (alsoTemplate) {
-          void invoke('save_provider_template', { template: buildDraft(), apiKey, editing: false }).catch(() => setTemplateSaveFailed(true))
+          try {
+            await invoke('save_provider_template', { template: buildDraft(), apiKey, editing: false })
+          }
+          catch {
+            setTemplateSaveFailed(true)
+            return
+          }
         }
+        onApplied()
       },
     )
   }
 
   function retryTemplateSave() {
-    setTemplateSaveFailed(false)
-    void invoke('save_provider_template', { template: buildDraft(), apiKey, editing: false }).catch(() => setTemplateSaveFailed(true))
+    void run(() => invoke('save_provider_template', { template: buildDraft(), apiKey, editing: false }), onApplied)
   }
 
   if (disabled)
     return null
+
+  if (preview) {
+    return (
+      <SectionCard title={t('providers.preview')} className="mb-5">
+        <ProviderPlanView preview={preview}>
+          <div className="flex justify-end gap-2">
+            <Button isDisabled={save.pending} onPress={() => { void applyChanges() }}>{t(save.pending ? 'launcher.processing' : 'providers.apply')}</Button>
+            <Button variant="outline" isDisabled={save.pending} onPress={() => setPreview(null)}>{t('launcher.cancel')}</Button>
+          </div>
+        </ProviderPlanView>
+        {failure !== '' && <ErrorBanner message={t('providers.add.failed')} detail={failure} />}
+      </SectionCard>
+    )
+  }
 
   return (
     <SectionCard
       title={t('providers.add.title')}
       description={t('providers.add.hint')}
       className="mb-5"
-      actions={(
+      actions={!open && (
         <Button size="sm" className="h-8 rounded-md bg-[var(--launcher-brand)] text-[var(--launcher-on-brand)]" onPress={() => { void openWizard() }}>
           <Plus className="size-4" />
           {t('providers.add.action')}
@@ -244,12 +284,12 @@ export default function ProviderAdd({ instanceId, disabled, onApplied }: { insta
       {templateSaveFailed && (
         <ErrorBanner
           message={t('providers.add.template_partial')}
-          action={<Button size="sm" variant="outline" className="h-7 rounded-md" onPress={retryTemplateSave}>{t('providers.add.retry_template')}</Button>}
+          action={<Button size="sm" variant="outline" className="h-7 rounded-md" isDisabled={save.pending} onPress={retryTemplateSave}>{t('providers.add.retry_template')}</Button>}
         />
       )}
 
       {open && (
-        <div className="mt-4 space-y-4">
+        <div className="mt-4 max-h-[52vh] space-y-4 overflow-y-auto pr-1">
           {catalogError !== '' && <ErrorBanner message={t('providers.add.catalog_unavailable')} detail={catalogError} />}
           {catalog !== null && catalog.length === 0 && catalogError === '' && <p className="m-0 text-xs text-[var(--launcher-muted)]">{t('providers.add.catalog_empty')}</p>}
 
@@ -441,13 +481,8 @@ export default function ProviderAdd({ instanceId, disabled, onApplied }: { insta
                 )}
               </div>
 
-              {preview !== null && <ProviderPlanView preview={preview} />}
-
-              <div className="flex flex-wrap items-center justify-end gap-2">
+              <div className="sticky bottom-0 flex flex-wrap items-center justify-end gap-2 border-t border-[var(--launcher-border)] bg-[var(--launcher-surface)] py-3">
                 <Button size="sm" variant="outline" className="h-8 rounded-md" isDisabled={!ready || save.pending} onPress={() => { void previewChanges() }}>{t('providers.preview')}</Button>
-                <Button size="sm" className="h-8 rounded-md bg-[var(--launcher-brand)] text-[var(--launcher-on-brand)]" isDisabled={preview === null || save.pending} onPress={() => { void applyChanges() }}>
-                  {t(save.pending ? 'launcher.processing' : 'providers.apply')}
-                </Button>
                 <Button size="sm" variant="ghost" className="h-8 rounded-md" isDisabled={save.pending} onPress={() => setOpen(false)}>{t('launcher.cancel')}</Button>
               </div>
             </>

@@ -93,7 +93,10 @@ fn rpc_id() -> String {
     )
 }
 
-async fn rpc(port: u16, method: &str, payload: Value) -> Result<Value, String> {
+/// One DSH remote call over the instance's loopback API. Crate-visible so the
+/// settings-descriptor read reuses this envelope instead of growing a second
+/// HTTP path with its own retry/parse rules.
+pub async fn rpc(port: u16, method: &str, payload: Value) -> Result<Value, String> {
     let url = format!("http://127.0.0.1:{port}/api/{method}");
     let body = json!({
         "type": "client-request",

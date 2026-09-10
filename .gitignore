@@ -15,6 +15,7 @@ src-tauri/resources/node
 .tmp
 skills
 .serena
+.mimosa/
 # 本地验收产物与浏览器快照
 /output/
 /.playwright-cli/

@@ -763,3 +763,13 @@ Schema 为 `{provider(必填), model(必填), reasoningEffort?}`（`dsh-agent-de
 修复后的契约为 `{ plan: { ..., sharing }, digest, fingerprint }`。计划展示只返回模型的 `id` / `name` / `contextWindow` / `maxTokens`，模型条目内其他键继续只在 YAML Document 内原地保留；明确清空自有模型参数会删除该键。摘要同时绑定凭据写入意图，旧预览不能应用另一份密钥。新增测试 `model options can be explicitly cleared while foreign nested fields stay private and preserved` 与 `an old preview cannot apply a different credential value`。本节只更正代码与自动化证据，真实界面仍须按后续清单验收。
 
 
+
+
+### 服务商双入口布局调整（2026-09-09）
+
+- 服务商库：搜索列表与选中详情分栏；从详情进入目标实例选择，再走原有预览与应用。编辑模板不会同步改写实例。
+- 实例页：集中搜索、导入、直接添加；添加与列表分开展示，技术详情折叠，模型列表局部滚动。窄窗口提供返回列表。
+- 本次仅调整服务商组件及双语文案，保留全局主题与渐变。
+- 2026-09-10 验证：TypeScript、定向 ESLint、构建通过；服务商测试 36 通过 / 0 跳过。Chrome 通过 IPv6 loopback 渲染真实组件、使用隔离 IPC 测试数据，检查 1348×810 与 700×740 布局、中英文、库到目标实例的预览/应用、独立编辑与直接添加、长预览操作可达性、模板保存失败后的重试与返回。
+- 编辑及添加的预览独立展示，统一预览按变更前/后分列、长模型逐行显示，操作区留在预览滚动区外。预览/应用期间锁定模块内的目标和模式切换。
+- 验证边界：浏览器组件回归使用模拟 IPC，没有写入用户实例或密钥；后端契约由真实运行时参与的服务商测试覆盖。本轮未进行原生 WebView 窗口的端到端点击验收，不将浏览器结果描述为原生实测。

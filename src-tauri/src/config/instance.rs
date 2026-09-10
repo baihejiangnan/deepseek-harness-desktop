@@ -499,29 +499,34 @@ pub fn sharing(
     exclude_id: Option<&str>,
 ) -> Result<InstanceSharing, String> {
     let registry = read_registry(app)?;
+    // 查询路径本身必须规范化成功：空 DSH_HOME 要报 INSTANCE_HOME_EMPTY，
+    // 不能退化成"按字面比较"而把一个空路径当成可共享的 Home。
     let normalized_home = normalize_home(home)?;
-    let home_users = registry
-        .instances
-        .iter()
-        .filter(|instance| {
-            if exclude_id == Some(instance.id.as_str()) {
-                return false;
-            }
-            normalize_home(&instance.dsh_home).unwrap_or_else(|_| instance.dsh_home.clone())
+    Ok(sharing_of(&registry, &normalized_home, profile, exclude_id))
+}
+
+/// Pure half of [`sharing`]: counts how many *other* registered instances still
+/// occupy the normalized Home (and the same Profile within it). Split out so the
+/// blast-radius rules the provider plan and the removal dialog both show can be
+/// tested without an application context. `normalized_home` must already be the
+/// canonical form; registry entries are normalized defensively because a stored
+/// path may no longer resolve.
+pub fn sharing_of(
+    registry: &InstanceRegistry,
+    normalized_home: &Path,
+    profile: &str,
+    exclude_id: Option<&str>,
+) -> InstanceSharing {
+    let same_home = |instance: &DshInstance| {
+        exclude_id != Some(instance.id.as_str())
+            && normalize_home(&instance.dsh_home).unwrap_or_else(|_| instance.dsh_home.clone())
                 == normalized_home
-        })
-        .count();
+    };
+    let home_users = registry.instances.iter().filter(|i| same_home(i)).count();
     let profile_users = registry
         .instances
         .iter()
-        .filter(|instance| {
-            if exclude_id == Some(instance.id.as_str()) {
-                return false;
-            }
-            normalize_home(&instance.dsh_home).unwrap_or_else(|_| instance.dsh_home.clone())
-                == normalized_home
-                && instance.profile == profile
-        })
+        .filter(|i| same_home(i) && i.profile == profile)
         .count();
     let level = if profile_users > 0 {
         "shared_profile"
@@ -530,11 +535,11 @@ pub fn sharing(
     } else {
         "isolated"
     };
-    Ok(InstanceSharing {
+    InstanceSharing {
         home_users,
         profile_users,
         level: level.to_string(),
-    })
+    }
 }
 
 pub fn restore_active(app: &AppHandle) -> Result<Option<DshInstance>, String> {
@@ -786,5 +791,50 @@ mod tests {
         assert!(home.exists(), "a refused removal must leave the Home intact");
 
         let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn sharing_counts_exclude_the_target_and_rank_profile_above_home() {
+        let home = std::env::temp_dir().join(format!("dsh-sharing-test-{}", std::process::id()));
+        let normalized = normalize_home(&home).expect("temp path normalizes");
+        let at = |id: &str, h: PathBuf, profile: &str| DshInstance {
+            id: id.into(),
+            name: id.into(),
+            dsh_home: h,
+            profile: profile.into(),
+            version: DshVersionRef::default(),
+            favorite: false,
+            created_at: 0,
+            repair_assistant: false,
+        };
+        let registry = InstanceRegistry {
+            instances: vec![
+                at("me", home.clone(), "tauri"),
+                at("twin", home.clone(), "tauri"),
+                at("roommate", home.clone(), "web"),
+                at("elsewhere", home.join("deep"), "tauri"),
+            ],
+            active_instance_id: None,
+        };
+
+        // 服务商计划用的是"排除自己"的口径：数字说的是"还有谁会被波及"。
+        // 把被查实例算进去会让单实例独占的 Home 也显示成"共享"。
+        let same_profile = sharing_of(&registry, &normalized, "tauri", Some("me"));
+        assert_eq!((same_profile.home_users, same_profile.profile_users), (2, 1));
+        assert_eq!(same_profile.level, "shared_profile");
+
+        // 同 Home 但没人用同一 Profile 时必须降级，不能谎称共用 Profile。
+        let solo = sharing_of(&registry, &normalized, "solo", Some("me"));
+        assert_eq!((solo.home_users, solo.profile_users), (2, 0));
+        assert_eq!(solo.level, "shared_home");
+
+        // 只剩自己：隔离，界面因此不显示共享提示。
+        let alone = InstanceRegistry { instances: vec![at("me", home.clone(), "tauri")], active_instance_id: None };
+        let isolated = sharing_of(&alone, &normalized, "tauri", Some("me"));
+        assert_eq!((isolated.home_users, isolated.profile_users), (0, 0));
+        assert_eq!(isolated.level, "isolated");
+
+        // 空路径要在这里就被拒，而不是退化成字面比较后把空 Home 当成可共享路径。
+        assert!(normalize_home(Path::new("")).is_err());
     }
 }

@@ -9,9 +9,11 @@ import { useStore } from 'valtio-define'
 import { store } from '@/store'
 import { updater } from '@/store/modules/updater'
 import { formatDshVersionLabel } from '@/utils/dsh-version'
+import { errorBannerDetail, errorHasCode, errorText } from '@/utils/error-codes'
 import { runViewTransition } from '@/utils/view-transition'
 import InstanceSettings from './instance-settings'
 import InstanceWizard, { SharingNotice } from './instance-wizard'
+import { ErrorBanner, PageHeader, StatusBadge } from './launcher-ui'
 
 interface InstanceManagerProps {
   onGoDownloads?: () => void
@@ -39,8 +41,10 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
   const activeIsRunning = active != null && runningInstanceIds.includes(active.id)
   // 宿主进程已启动但 Harness 尚未监听端口时，保持明确的启动中反馈。
   const activeIsStarting = activeIsRunning && activePort == null
-  const activeLaunchRequested = active != null && busyInstanceId === active.id
-  const activeIsBooting = activeIsStarting || activeLaunchRequested
+  const activeIsBusy = active != null && busyInstanceId === active.id
+  // busyInstanceId 覆盖启动与停止两条路径：仍在运行清单里的是停止中，否则是宿主尚未登记的启动中。
+  const activeIsStopping = activeIsBusy && activeIsRunning
+  const activeIsBooting = !activeIsStopping && (activeIsStarting || activeIsBusy)
   const groups = groupInstances(registry.instances)
   const affectedInstances = active ? registry.instances.filter(item => item.dshHome === active.dshHome) : []
   const sameHome = affectedInstances.length
@@ -48,11 +52,12 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
   const level = sameProfile > 1 ? 'shared_profile' : sameHome > 1 ? 'shared_home' : 'isolated'
   const runningAffected = affectedInstances.filter(item => runningInstanceIds.includes(item.id))
   // 守卫在删除入口内拒绝时弹窗仍保持打开，错误必须落在弹窗里，否则用户看不到任何反馈。
+  // INSTANCE_HOME_RUNNING 在删除路径的载荷是一句说明而不是 `<id>:<name>`，因此仍用删除场景专用文案。
   const removalError = error === ''
     ? ''
-    : error.startsWith('INSTANCE_HOME_RUNNING:')
+    : errorHasCode(error, 'INSTANCE_HOME_RUNNING')
       ? t('launcher.remove_instance_leftover_running')
-      : error
+      : errorText(error)
   const removeState = useOverlayState({
     isOpen: removeOpen,
     onOpenChange: setRemoveOpen,
@@ -256,18 +261,23 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
                   style={{ viewTransitionName: `launcher-${instance.id}` }}
                   onClick={() => selectInstance(instance.id)}
                 >
-                  <span className="grid size-9 flex-none place-items-center rounded-md bg-[var(--launcher-brand)] font-semibold text-white">{instance.name.slice(0, 1).toUpperCase()}</span>
+                  <span className="grid size-9 flex-none place-items-center rounded-md bg-[var(--launcher-brand)] font-semibold text-[var(--launcher-on-brand)]">{instance.name.slice(0, 1).toUpperCase()}</span>
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-medium">{instance.name}</span>
                     <span className="block truncate text-xs opacity-70">{instance.profile}</span>
                   </span>
-                  <If cond={runningInstanceIds.includes(instance.id)}><span className="size-2 rounded-full bg-ok" /></If>
+                  <If cond={runningInstanceIds.includes(instance.id)}>
+                    <span className="flex flex-none items-center gap-1.5 text-xs text-[var(--launcher-brand-strong)]">
+                      <span className="size-2 rounded-full bg-ok" aria-hidden="true" />
+                      {t('launcher.instance_status.running')}
+                    </span>
+                  </If>
                 </button>
               ))}
             </section>
           ))}
         </div>
-        <button className="m-3 h-10 rounded-md border border-[var(--launcher-border)] bg-white text-sm text-[var(--launcher-ink)] transition-colors hover:border-[var(--launcher-brand)] hover:text-[var(--launcher-brand-strong)] disabled:cursor-not-allowed disabled:opacity-50" type="button" disabled={dshUpdating} onClick={() => setCreating(true)}>
+        <button className="m-3 h-10 rounded-md border border-[var(--launcher-border)] bg-white text-sm text-[var(--launcher-ink)] transition-colors motion-reduce:transition-none hover:border-[var(--launcher-brand)] hover:text-[var(--launcher-brand-strong)] disabled:cursor-not-allowed disabled:opacity-50" type="button" disabled={dshUpdating} onClick={() => setCreating(true)}>
           +
           {' '}
           {t('launcher.new_instance')}
@@ -292,39 +302,50 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
             <main key={`overview-${active?.id ?? 'empty'}`} className="launcher-content-enter min-w-0 flex-1 overflow-y-auto bg-[var(--launcher-canvas)] p-8 text-[var(--launcher-ink)]" style={{ viewTransitionName: 'launcher-instance-content' }}>
               <If cond={active != null}>
                 <div className="mx-auto max-w-[900px]">
-                  <div className="mb-7 flex items-start justify-between gap-6">
-                    <div>
-                      <div className="mb-2 text-xs font-semibold text-[var(--launcher-brand)]">{t('launcher.current_instance')}</div>
-                      <h1 className="m-0 text-2xl font-semibold">{active?.name}</h1>
-                      <p className="mt-2 text-sm text-[var(--launcher-muted)]">{activeIsBooting ? t('launcher.starting_instance_detail') : t('launcher.ready_description')}</p>
-                    </div>
-                    <div className="flex gap-2">
-                      {activeIsBooting
-                        ? (
-                            <Button className="h-10 min-w-[148px] rounded-md border-[var(--launcher-border)] bg-white text-[var(--launcher-brand-strong)]" variant="outline" isDisabled>
-                              <Spinner size="sm" color="current" />
-                              {t('launcher.starting_instance')}
-                            </Button>
-                          )
-                        : activeIsRunning
+                  <PageHeader
+                    className="mb-7"
+                    title={active!.name}
+                    description={activeIsBooting ? t('launcher.starting_instance_detail') : t('launcher.ready_description')}
+                    status={(
+                      <StatusBadge tone={activeIsBooting || activeIsStopping ? 'accent' : activeIsRunning ? 'success' : 'neutral'}>
+                        {activeIsBooting
+                          ? t('launcher.instance_status.booting')
+                          : activeIsStopping
+                            ? t('launcher.instance_status.stopping')
+                            : activeIsRunning
+                              ? t('launcher.instance_status.running')
+                              : t('launcher.instance_status.stopped')}
+                      </StatusBadge>
+                    )}
+                    actions={(
+                      <>
+                        {activeIsBooting || activeIsStopping
                           ? (
-                              <Button className="h-10 rounded-md border-[var(--launcher-border)] bg-white text-danger" variant="outline" isDisabled={busyInstanceId != null || dshUpdating} onPress={() => { void store.launcher.stopInstance(active!.id) }}>
-                                <Power />
-                                {t('app.shutdown')}
+                              <Button className="h-10 min-w-[148px] rounded-md border-[var(--launcher-border)] bg-white text-[var(--launcher-brand-strong)]" variant="outline" isDisabled>
+                                <Spinner size="sm" color="current" />
+                                {activeIsStopping ? t('launcher.instance_status.stopping') : t('launcher.starting_instance')}
                               </Button>
                             )
-                          : (
-                              <Button className="h-10 rounded-md bg-[var(--launcher-brand)] px-6 text-white" isDisabled={busyInstanceId != null || dshUpdating} onPress={() => { void store.launcher.launch() }}>
-                                <Rocket />
-                                {t('launcher.launch_instance')}
-                              </Button>
-                            )}
-                    </div>
-                  </div>
+                          : activeIsRunning
+                            ? (
+                                <Button className="h-10 rounded-md border-[var(--launcher-border)] bg-white text-danger" variant="outline" isDisabled={busyInstanceId != null || dshUpdating} onPress={() => { void store.launcher.stopInstance(active!.id) }}>
+                                  <Power />
+                                  {t('app.shutdown')}
+                                </Button>
+                              )
+                            : (
+                                <Button className="h-10 rounded-md bg-[var(--launcher-brand)] px-6 text-[var(--launcher-on-brand)]" isDisabled={busyInstanceId != null || dshUpdating} onPress={() => { void store.launcher.launch() }}>
+                                  <Rocket />
+                                  {t('launcher.launch_instance')}
+                                </Button>
+                              )}
+                      </>
+                    )}
+                  />
                   {activeIsBooting && (
                     <section className="mb-6 overflow-hidden rounded-lg border border-[var(--launcher-brand)]/25 bg-[var(--launcher-selected)]/65 p-4 shadow-[0_4px_16px_color-mix(in_srgb,var(--launcher-brand)_9%,transparent)]" aria-live="polite">
                       <div className="flex items-start gap-3">
-                        <div className="grid size-9 flex-none place-items-center rounded-md bg-[var(--launcher-brand)] text-white">
+                        <div className="grid size-9 flex-none place-items-center rounded-md bg-[var(--launcher-brand)] text-[var(--launcher-on-brand)]">
                           <Spinner size="sm" color="current" />
                         </div>
                         <div className="min-w-0 flex-1">
@@ -414,7 +435,7 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
                       {t('launcher.remove_instance')}
                     </Button>
                   </div>
-                  <If cond={error !== ''}><p className="mt-4 text-xs text-danger">{removalError}</p></If>
+                  <If cond={error !== ''}><ErrorBanner className="mt-4" message={removalError} detail={errorBannerDetail(error)} /></If>
                 </div>
               </If>
             </main>
@@ -428,6 +449,7 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
                 <Modal.CloseTrigger isDisabled={removing} />
               </Modal.Header>
               <Modal.Body className="space-y-3">
+                <p className="m-0 text-sm text-danger">{t('launcher.remove_instance_description')}</p>
                 <p className="m-0 text-sm text-[var(--launcher-muted)]">{t('launcher.remove_instance_export_prompt')}</p>
                 <div className="rounded-md border border-[var(--launcher-brand)]/25 bg-[var(--launcher-selected)]/60 p-3 text-xs leading-5 text-[var(--launcher-ink)]">
                   <div className="font-semibold">{t('launcher.remove_instance_registry_only_title')}</div>
@@ -438,7 +460,17 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
                   <p className="m-0 text-xs text-danger">{t('launcher.remove_instance_shared')}</p>
                   <div className="rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-canvas)] px-3 py-2 text-xs text-[var(--launcher-muted)]">
                     <div className="font-medium text-[var(--launcher-ink)]">{t('launcher.remove_instance_affected')}</div>
-                    <div className="mt-1">{affectedInstances.map(item => `${item.name} (${item.profile})`).join('、')}</div>
+                    <ul className="m-0 mt-1 list-none space-y-0.5 p-0">
+                      {affectedInstances.map(item => (
+                        <li key={item.id} className="min-w-0 break-words">
+                          {item.name}
+                          <span className="text-[var(--launcher-muted)]">
+                            {' · '}
+                            {item.profile}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
                   </div>
                 </If>
                 <If cond={runningAffected.length > 0}>
@@ -456,7 +488,7 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
                 <Button className="rounded-md" variant="outline" isDisabled={removing || runningAffected.length > 0} onPress={removeInstanceRegistryOnly}>
                   {removing ? t('launcher.removing_instance') : t('launcher.remove_registry_only')}
                 </Button>
-                <Button className="rounded-md bg-[var(--launcher-brand)] text-white" isDisabled={removing} onPress={goToExport}>
+                <Button className="rounded-md bg-[var(--launcher-brand)] text-[var(--launcher-on-brand)]" isDisabled={removing} onPress={goToExport}>
                   {t('launcher.go_to_export')}
                 </Button>
               </Modal.Footer>
@@ -506,7 +538,7 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
               </Modal.Body>
               <Modal.Footer className="flex-wrap gap-2">
                 <Button className="rounded-md" variant="tertiary" isDisabled={failureAction != null} onPress={() => { void copyFailureLog() }}>{t('launcher.launch_failure_copy_log')}</Button>
-                <Button className="rounded-md bg-[var(--launcher-brand)] text-white" isDisabled={failureAction != null} onPress={() => { void retryFailedInstance() }}>{t('launcher.launch_failure_retry')}</Button>
+                <Button className="rounded-md bg-[var(--launcher-brand)] text-[var(--launcher-on-brand)]" isDisabled={failureAction != null} onPress={() => { void retryFailedInstance() }}>{t('launcher.launch_failure_retry')}</Button>
               </Modal.Footer>
             </Modal.Dialog>
           </Modal.Container>
@@ -528,7 +560,7 @@ function OverviewTable({ rows }: { rows: OverviewRow[] }) {
     <section className="mt-6 overflow-hidden rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)] shadow-[0_1px_2px_color-mix(in_srgb,var(--launcher-ink)_5%,transparent)]">
       <dl className="m-0">
         {rows.map((row, index) => (
-          <div key={row.label} className={`group grid min-h-[54px] grid-cols-[160px_minmax(0,1fr)] items-center transition-colors duration-150 hover:bg-[var(--launcher-selected)]/45 max-sm:grid-cols-1 max-sm:gap-1 max-sm:px-4 max-sm:py-3 ${index === rows.length - 1 ? '' : 'border-b border-[var(--launcher-border)]'}`}>
+          <div key={row.label} className={`group grid min-h-[54px] grid-cols-[160px_minmax(0,1fr)] items-center transition-colors motion-reduce:transition-none duration-150 hover:bg-[var(--launcher-selected)]/45 max-sm:grid-cols-1 max-sm:gap-1 max-sm:px-4 max-sm:py-3 ${index === rows.length - 1 ? '' : 'border-b border-[var(--launcher-border)]'}`}>
             <dt className="self-stretch bg-[var(--launcher-sidebar)]/55 px-5 py-[18px] text-xs font-medium text-[var(--launcher-muted)] max-sm:bg-transparent max-sm:p-0">{row.label}</dt>
             <dd className={`${row.mono ? 'font-mono text-xs' : 'text-sm'} m-0 min-w-0 break-all px-5 py-4 text-[var(--launcher-ink)] max-sm:p-0`}>
               <If cond={row.accent === true} then={<span className="inline-flex rounded-full bg-[var(--launcher-selected)] px-2.5 py-1 text-xs font-medium text-[var(--launcher-brand-strong)]">{row.value}</span>} else={row.value} />

@@ -1,6 +1,6 @@
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import type { DshInstance } from '@/store/modules/launcher/types'
-import { ArrowDownToLine, ArrowLeft, ArrowRight, ArrowRotateRight, ArrowUpRightFromSquare, ChevronDown, Copy, Power, TrashBin, Xmark } from '@gravity-ui/icons'
+import { ArrowDownToLine, ArrowRotateRight, ArrowUpRightFromSquare, ChevronDown, Copy, Power, TrashBin, Xmark } from '@gravity-ui/icons'
 import { Button, Chip, ListBox, Modal, Select, useOverlayState } from '@heroui/react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
@@ -9,6 +9,8 @@ import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
 import { store } from '@/store'
 import { toast } from '@/utils'
+import { errorBannerDetail, errorHasCode, errorText, isCancellation } from '@/utils/error-codes'
+import { ErrorBanner, PageHeader, PaginationBar as SharedPaginationBar } from './launcher-ui'
 
 const CATALOG_PAGE_SIZE = 6
 
@@ -104,18 +106,18 @@ function PluginPackSection(props: PluginPackSectionProps) {
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <h3 className="m-0 truncate text-sm font-semibold">{pack.name}</h3>
-                <p className="m-0 mt-1 truncate font-mono text-[10px] text-[var(--launcher-muted)]">{pack.id}</p>
+                <p className="m-0 mt-1 truncate font-mono text-xs text-[var(--launcher-muted)]">{pack.id}</p>
               </div>
-              {pack.profile && <span className="rounded-full bg-[var(--launcher-selected)] px-2 py-1 text-[10px] text-[var(--launcher-brand-strong)]">{t('download.pack_profile_source', { profile: pack.profile })}</span>}
+              {pack.profile && <span className="rounded-full bg-[var(--launcher-selected)] px-2 py-1 text-xs text-[var(--launcher-brand-strong)]">{t('download.pack_profile_source', { profile: pack.profile })}</span>}
             </div>
             <p className="mt-3 line-clamp-3 text-xs leading-5 text-[var(--launcher-muted)]">{pack.description}</p>
             <div className="mt-auto flex items-center justify-between gap-2 pt-3">
-              <span className="truncate text-[10px] text-[var(--launcher-muted)]">{pack.format}</span>
+              <span className="truncate text-xs text-[var(--launcher-muted)]">{pack.format}</span>
               <div className="flex items-center gap-1">
                 <Button isIconOnly size="sm" variant="ghost" className="size-7 min-w-7 rounded-md" aria-label={t('download.open_pack_repo')} onPress={() => { void props.onOpenRepo(pack.repository) }}>
                   <ArrowUpRightFromSquare className="size-3.5" />
                 </Button>
-                <Button size="sm" className="h-7 rounded-md bg-[var(--launcher-brand)] px-3 text-xs text-white" variant={selectedPack?.id === pack.id ? 'primary' : 'outline'} onPress={() => { void props.onSelect(pack.id) }}>
+                <Button size="sm" className="h-7 rounded-md bg-[var(--launcher-brand)] px-3 text-xs text-[var(--launcher-on-brand)]" variant={selectedPack?.id === pack.id ? 'primary' : 'outline'} onPress={() => { void props.onSelect(pack.id) }}>
                   {t('download.pack_details')}
                 </Button>
               </div>
@@ -150,11 +152,11 @@ function PluginPackSection(props: PluginPackSectionProps) {
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2 text-xs font-medium">
                       <span>{plugin.name}</span>
-                      {plugin.kind !== 'plugin' && <span className="rounded bg-[var(--launcher-selected)] px-1.5 py-0.5 text-[10px] text-[var(--launcher-brand-strong)]">{plugin.kind}</span>}
-                      {installed && <span className="text-[10px] text-[var(--launcher-brand-strong)]">{t('download.installed')}</span>}
+                      {plugin.kind !== 'plugin' && <span className="rounded bg-[var(--launcher-selected)] px-1.5 py-0.5 text-xs text-[var(--launcher-brand-strong)]">{plugin.kind}</span>}
+                      {installed && <span className="text-xs text-[var(--launcher-brand-strong)]">{t('download.installed')}</span>}
                     </div>
-                    <div className="mt-1 truncate font-mono text-[10px] text-[var(--launcher-muted)]">{plugin.spec}</div>
-                    {plugin.requires.length > 0 && <div className="mt-1 text-[10px] text-[var(--launcher-muted)]">{t('download.pack_requires', { requires: plugin.requires.join(', ') })}</div>}
+                    <div className="mt-1 truncate font-mono text-xs text-[var(--launcher-muted)]">{plugin.spec}</div>
+                    {plugin.requires.length > 0 && <div className="mt-1 text-xs text-[var(--launcher-muted)]">{t('download.pack_requires', { requires: plugin.requires.join(', ') })}</div>}
                   </div>
                 </div>
               )
@@ -252,6 +254,12 @@ interface PluginPackInstallResult {
 interface InstallLog { line: string }
 export interface PackInstallProgress { completed: number, total: number, plugin: string }
 
+/** 手动多规格安装的逐条进度，对应后端 `plugin-install-progress`。 */
+interface ManualInstallProgress { completed: number, total: number, spec: string }
+
+/** 失败后可原样重试的那次安装；取消不记入。 */
+type InstallAttempt = { kind: 'catalog', plugin: CatalogPlugin } | { kind: 'manual', specs: string }
+
 interface DownloadCenterProps {
   onPackProgress?: (progress: PackInstallProgress | null) => void
 }
@@ -311,7 +319,13 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
   const [cancellingInstall, setCancellingInstall] = useState(false)
   const installCancelledRef = useRef(false)
   const [installingName, setInstallingName] = useState('')
+  const [manualProgress, setManualProgress] = useState<ManualInstallProgress | null>(null)
+  // 只有真失败才记住这次安装；用户主动取消不需要"重试"按钮。
+  const [retryable, setRetryable] = useState<InstallAttempt | null>(null)
   const [logs, setLogs] = useState<string[]>([])
+  // 安装输出没有持久文件，前端缓冲区是唯一副本：显示可以截断，复制必须拿到全部保留行。
+  const installLogLinesRef = useRef<string[]>([])
+  const [installLogTruncated, setInstallLogTruncated] = useState(false)
   const [error, setError] = useState('')
   const [packCatalog, setPackCatalog] = useState<PluginPackCatalog | null>(null)
   const [packCatalogLoading, setPackCatalogLoading] = useState(false)
@@ -436,7 +450,7 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
     catch (err) {
       const message = String(err)
       if (requestId === packRequestIdRef.current && resourceViewRef.current === 'packs') {
-        if (message.includes('PLUGIN_PACK_MARKET_NETWORK')) {
+        if (errorHasCode(message, 'PLUGIN_PACK_MARKET_NETWORK')) {
           toast(t('download.pack_market_network_title'), {
             actionProps: {
               children: t('download.pack_market_network_retry'),
@@ -572,6 +586,8 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
     (catalogPage - 1) * CATALOG_PAGE_SIZE,
     catalogPage * CATALOG_PAGE_SIZE,
   )
+  // 三种安装互斥：既不是插件包也没有目录插件名时，进行中的就是手动规格安装。
+  const manualInstalling = installing && packInstallingId === '' && installingName === ''
 
   async function openRepo(url: string) {
     try {
@@ -587,46 +603,81 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
       return
     setInstalling(true)
     setInstallingName(plugin.name)
+    setCancellingInstall(false)
+    installCancelledRef.current = false
     setError('')
-    setLogs([])
+    setRetryable(null)
+    resetInstallLog()
     let unlisten: UnlistenFn | undefined
     try {
-      unlisten = await listen<InstallLog>('plugin-install-log', event => setLogs(previous => [...previous, event.payload.line].slice(-120)))
+      unlisten = await listenInstallLog()
       await invoke('install_catalog_plugin_for_instance', { instanceId: target.id, pluginName: plugin.name, source: catalogSource })
       await loadInstalled()
     }
     catch (err) {
-      setError(String(err))
+      reportInstallFailure(err, { kind: 'catalog', plugin })
     }
     finally {
       unlisten?.()
       setInstallingName('')
       setInstalling(false)
+      setCancellingInstall(false)
+      installCancelledRef.current = false
     }
   }
 
-  async function installManualPackages() {
+  async function installManualPackages(input = specs) {
     if (!target || targetHomeRunning || installing)
       return
-    if (!specs.trim())
+    if (!input.trim())
       return
     setInstalling(true)
+    setCancellingInstall(false)
+    installCancelledRef.current = false
+    setManualProgress(null)
     setError('')
-    setLogs([])
-    let unlisten: UnlistenFn | undefined
+    setRetryable(null)
+    resetInstallLog()
+    let unlistenLog: UnlistenFn | undefined
+    let unlistenProgress: UnlistenFn | undefined
     try {
-      unlisten = await listen<InstallLog>('plugin-install-log', event => setLogs(previous => [...previous, event.payload.line].slice(-120)))
-      await invoke('install_plugin_packages_for_instance', { instanceId: target.id, input: specs })
+      unlistenLog = await listenInstallLog()
+      unlistenProgress = await listen<ManualInstallProgress>('plugin-install-progress', event => setManualProgress(event.payload))
+      await invoke('install_plugin_packages_for_instance', { instanceId: target.id, input })
       setSpecs('')
       await loadInstalled()
     }
     catch (err) {
-      setError(String(err))
+      reportInstallFailure(err, { kind: 'manual', specs: input })
     }
     finally {
-      unlisten?.()
+      unlistenLog?.()
+      unlistenProgress?.()
       setInstalling(false)
+      setCancellingInstall(false)
+      installCancelledRef.current = false
     }
+  }
+
+  // 取消不是失败：后端回 PLUGIN_INSTALL_CANCELLED，只提示已停止并保留日志供查看。
+  function reportInstallFailure(err: unknown, attempt: InstallAttempt) {
+    const message = String(err)
+    if (installCancelledRef.current || isCancellation(message)) {
+      toast(t('download.install_stopped'), { variant: 'default', placement: 'bottom end' })
+      return
+    }
+    setError(message)
+    setRetryable(attempt)
+  }
+
+  function retryInstall() {
+    if (!retryable || installing)
+      return
+    if (retryable.kind === 'catalog')
+      return installCatalogPlugin(retryable.plugin)
+    // 手动安装成功后输入框会被清空，重试要把原规格放回去让用户看见将要执行什么。
+    setSpecs(retryable.specs)
+    return installManualPackages(retryable.specs)
   }
 
   async function installPack(packId: string): Promise<PluginPackInstallResult> {
@@ -637,12 +688,12 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
     installCancelledRef.current = false
     setPackInstallingId(packId)
     setError('')
-    setLogs([])
+    resetInstallLog()
     onPackProgress?.(null)
     let unlistenLog: UnlistenFn | undefined
     let unlistenProgress: UnlistenFn | undefined
     try {
-      unlistenLog = await listen<InstallLog>('plugin-install-log', event => setLogs(previous => [...previous, event.payload.line].slice(-120)))
+      unlistenLog = await listenInstallLog()
       unlistenProgress = await listen<PackInstallProgress>('plugin-pack-install-progress', event => onPackProgress?.(event.payload))
       const result = await invoke<PluginPackInstallResult>('install_plugin_pack_for_instance', { instanceId: target.id, packId })
       await loadInstalled()
@@ -651,7 +702,7 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
     }
     catch (err) {
       const message = String(err)
-      const cancelled = installCancelledRef.current || message.includes('PLUGIN_INSTALL_CANCELLED')
+      const cancelled = installCancelledRef.current || isCancellation(message)
       if (!cancelled)
         setError(message)
       toast(t(cancelled ? 'download.pack_install_cancelled' : 'download.pack_install_failed'), { variant: cancelled ? 'default' : 'danger', placement: 'bottom end' })
@@ -668,8 +719,9 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
     }
   }
 
-  async function cancelPackInstall() {
-    if (!packInstallingId || cancellingInstall)
+  // 取消对三种安装都有效：后端的取消标志与进程树终止是全局的，不区分来源。
+  async function cancelInstall() {
+    if (!installing || cancellingInstall)
       return
     installCancelledRef.current = true
     setCancellingInstall(true)
@@ -684,9 +736,37 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
     }
   }
 
+  const INSTALL_LOG_DISPLAY_LINES = 120
+  const INSTALL_LOG_KEEP_LINES = 5000
+
+  function resetInstallLog() {
+    installLogLinesRef.current = []
+    setInstallLogTruncated(false)
+    setLogs([])
+  }
+
+  function appendInstallLog(line: string) {
+    if (installLogLinesRef.current.length < INSTALL_LOG_KEEP_LINES)
+      installLogLinesRef.current.push(line)
+    else
+      setInstallLogTruncated(true)
+    setLogs(previous => [...previous, line].slice(-INSTALL_LOG_DISPLAY_LINES))
+  }
+
+  function listenInstallLog() {
+    return listen<InstallLog>('plugin-install-log', event => appendInstallLog(event.payload.line))
+  }
+
+  function installLogText() {
+    const lines = [...installLogLinesRef.current]
+    if (installLogTruncated)
+      lines.push(t('download.logs_truncated_note', { count: INSTALL_LOG_KEEP_LINES }))
+    return lines.join('\n')
+  }
+
   async function copyInstallLogs() {
     try {
-      await navigator.clipboard.writeText(logs.join('\n'))
+      await navigator.clipboard.writeText(installLogText())
       toast(t('download.logs_copied'), { variant: 'accent' })
     }
     catch {
@@ -761,27 +841,26 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
       </aside>
       <main className="min-h-0 min-w-0 flex-1 overflow-y-auto px-8 py-7">
         <div key={resourceView} className="launcher-content-enter mx-auto max-w-[1080px]">
-          <header className="mb-5 flex items-end justify-between gap-4">
-            <div>
-              <div className="mb-1 text-xs font-semibold text-[var(--launcher-brand)]">{t('download.eyebrow')}</div>
-              <h1 className="m-0 text-2xl font-semibold">{pageCopy.title}</h1>
-              {resourceView === 'packs'
-                ? (
-                    <p className="mb-0 mt-3 inline-flex flex-wrap items-center gap-x-1.5 gap-y-1 rounded-md border border-[var(--launcher-brand)]/30 bg-[var(--launcher-selected)] px-3 py-2 text-sm font-medium text-[var(--launcher-ink)]">
-                      <span>{pageCopy.subtitle}</span>
-                      <button type="button" className="font-semibold text-[var(--launcher-brand-strong)] underline decoration-2 underline-offset-2 transition-colors hover:text-[var(--launcher-brand)]" onClick={() => { void openRepo('https://github.com/baihejiangnan/dsh-plugin-pack-ai-share-template/blob/main/PROMPT.md') }}>{t('download.packs_prompt_link')}</button>
-                      <ArrowUpRightFromSquare className="size-3.5 text-[var(--launcher-brand-strong)]" />
-                    </p>
-                  )
-                : <p className="mb-0 mt-2 text-sm text-[var(--launcher-muted)]">{pageCopy.subtitle}</p>}
-            </div>
-            <Button className="h-9 rounded-md border-[var(--launcher-border)] bg-white text-[var(--launcher-ink)]" variant="outline" isDisabled={resourceView === 'plugins' ? catalogLoading || installing : resourceView === 'packs' ? packCatalogLoading || packDetailLoading || installing : loading || installing} onPress={() => { void refreshCurrentView() }}>
-              <ArrowRotateRight />
-              {t('download.refresh')}
-            </Button>
-          </header>
+          <PageHeader
+            title={pageCopy.title}
+            description={pageCopy.subtitle}
+            actions={(
+              <>
+                {resourceView === 'packs' && (
+                  <Button className="h-9 rounded-md border-[var(--launcher-border)] bg-white text-[var(--launcher-brand-strong)]" variant="outline" isDisabled={installing} onPress={() => { void openRepo('https://github.com/baihejiangnan/dsh-plugin-pack-ai-share-template/blob/main/PROMPT.md') }}>
+                    {t('download.packs_prompt_link')}
+                    <ArrowUpRightFromSquare className="size-3.5" />
+                  </Button>
+                )}
+                <Button className="h-9 rounded-md border-[var(--launcher-border)] bg-white text-[var(--launcher-ink)]" variant="outline" isDisabled={resourceView === 'plugins' ? catalogLoading || installing : resourceView === 'packs' ? packCatalogLoading || packDetailLoading || installing : loading || installing} onPress={() => { void refreshCurrentView() }}>
+                  <ArrowRotateRight />
+                  {t('download.refresh')}
+                </Button>
+              </>
+            )}
+          />
 
-          <div className="mb-5 flex flex-wrap items-center gap-3 rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)] px-4 py-3">
+          <div className="sticky top-0 z-20 mb-5 flex flex-wrap items-center gap-3 rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)] px-4 py-3">
             <span className="flex-none text-xs font-medium">{t('download.target_label')}</span>
             <Select selectedKey={resolvedTargetId ?? undefined} onSelectionChange={key => setTargetId(String(key))} className="launcher-select min-w-[220px] flex-1">
               <Select.Trigger className="h-9 rounded-md">
@@ -800,13 +879,26 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
               </Select.Popover>
             </Select>
             <span className="text-xs text-[var(--launcher-muted)]">{target ? t('download.target', { name: target.name, profile: target.profile }) : t('download.no_target')}</span>
+            {targetHomeRunning && <span className="w-full text-xs leading-5 text-[#72521b]">{t('download.stop_home_first')}</span>}
           </div>
 
           {!target && <div className="mb-5 rounded-md border border-[#ead39e] bg-[#fff8e8] px-4 py-3 text-sm text-[#72521b]">{t('download.create_instance_first')}</div>}
-          {targetHomeRunning && <div className="mb-5 rounded-md border border-[#ead39e] bg-[#fff8e8] px-4 py-3 text-sm text-[#72521b]">{t('download.stop_home_first')}</div>}
-          {catalogError && <div className="mb-5 rounded-md border border-danger/30 bg-danger/5 px-4 py-3 text-xs text-danger">{catalogError}</div>}
-          {resourceView === 'packs' && packCatalogError && <div className="mb-5 rounded-md border border-danger/30 bg-danger/5 px-4 py-3 text-xs text-danger">{packCatalogError}</div>}
-          {error && <div className="mb-5 rounded-md border border-danger/30 bg-danger/5 px-4 py-3 text-xs text-danger">{error}</div>}
+          {catalogError && <ErrorBanner className="mb-5" message={errorText(catalogError)} detail={errorBannerDetail(catalogError)} />}
+          {resourceView === 'packs' && packCatalogError && <ErrorBanner className="mb-5" message={errorText(packCatalogError)} detail={errorBannerDetail(packCatalogError)} />}
+          {error && (
+            <ErrorBanner
+              className="mb-5"
+              message={errorText(error)}
+              detail={errorBannerDetail(error)}
+              action={retryable
+                ? (
+                    <Button size="sm" className="h-8 rounded-md border-[var(--launcher-border)] bg-white text-[var(--launcher-ink)]" variant="outline" isDisabled={installing} onPress={() => { void retryInstall() }}>
+                      {t('download.retry_install')}
+                    </Button>
+                  )
+                : undefined}
+            />
+          )}
 
           {resourceView === 'plugins'
             ? (
@@ -840,23 +932,23 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
                           type="button"
                           aria-expanded={categoryOpen}
                           aria-haspopup="listbox"
-                          className={`flex h-9 w-full items-center justify-between rounded-md border px-3 text-left text-sm transition-colors ${categoryOpen ? 'border-[var(--launcher-brand)] bg-white' : 'border-[var(--launcher-border)] bg-white hover:border-[var(--launcher-brand)]'}`}
+                          className={`flex h-9 w-full items-center justify-between rounded-md border px-3 text-left text-sm transition-colors motion-reduce:transition-none ${categoryOpen ? 'border-[var(--launcher-brand)] bg-white' : 'border-[var(--launcher-border)] bg-white hover:border-[var(--launcher-brand)]'}`}
                           onClick={() => setCategoryOpen(open => !open)}
                         >
                           <span className="truncate">{category === 'all' ? t('download.all_categories') : catalog?.categories[category]?.[language] ?? category}</span>
-                          <ChevronDown className={`ml-2 size-4 text-[var(--launcher-muted)] transition-transform duration-200 ${categoryOpen ? 'rotate-180' : ''}`} />
+                          <ChevronDown className={`ml-2 size-4 text-[var(--launcher-muted)] transition-transform duration-200 motion-reduce:transition-none ${categoryOpen ? 'rotate-180' : ''}`} />
                         </button>
                         <div
                           role="listbox"
                           aria-label={t('download.all_categories')}
-                          className={`absolute top-full z-30 mt-2 w-[min(430px,calc(100vw-2rem))] rounded-lg border border-[var(--launcher-border)] bg-[var(--launcher-surface)]/90 p-3 shadow-[0_14px_36px_rgba(25,45,64,0.18)] backdrop-blur-xl transition-all duration-200 ease-out ${categoryMenuAlign === 'start' ? 'left-0 origin-top-left' : 'right-0 origin-top-right'} ${categoryOpen ? 'visible scale-100 opacity-100' : 'pointer-events-none invisible scale-95 opacity-0'}`}
+                          className={`absolute top-full z-30 mt-2 w-[min(430px,calc(100vw-2rem))] rounded-lg border border-[var(--launcher-border)] bg-[var(--launcher-surface)]/90 p-3 shadow-[0_14px_36px_rgba(25,45,64,0.18)] backdrop-blur-xl transition-all motion-reduce:transition-none duration-200 ease-out ${categoryMenuAlign === 'start' ? 'left-0 origin-top-left' : 'right-0 origin-top-right'} ${categoryOpen ? 'visible scale-100 opacity-100' : 'pointer-events-none invisible scale-95 opacity-0'}`}
                         >
                           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                             <button
                               type="button"
                               role="option"
                               aria-selected={category === 'all'}
-                              className={`min-h-9 rounded-md border px-3 py-2 text-left text-xs transition-colors ${category === 'all' ? 'border-[var(--launcher-brand)] bg-[var(--launcher-selected)] font-medium text-[var(--launcher-brand-strong)]' : 'border-transparent text-[var(--launcher-ink)] hover:border-[var(--launcher-border)] hover:bg-white/70'}`}
+                              className={`min-h-9 rounded-md border px-3 py-2 text-left text-xs transition-colors motion-reduce:transition-none ${category === 'all' ? 'border-[var(--launcher-brand)] bg-[var(--launcher-selected)] font-medium text-[var(--launcher-brand-strong)]' : 'border-transparent text-[var(--launcher-ink)] hover:border-[var(--launcher-border)] hover:bg-white/70'}`}
                               onClick={() => changeCatalogCategory('all')}
                             >
                               {t('download.all_categories')}
@@ -867,7 +959,7 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
                                 type="button"
                                 role="option"
                                 aria-selected={category === item}
-                                className={`min-h-9 rounded-md border px-3 py-2 text-left text-xs transition-colors ${category === item ? 'border-[var(--launcher-brand)] bg-[var(--launcher-selected)] font-medium text-[var(--launcher-brand-strong)]' : 'border-transparent text-[var(--launcher-ink)] hover:border-[var(--launcher-border)] hover:bg-white/70'}`}
+                                className={`min-h-9 rounded-md border px-3 py-2 text-left text-xs transition-colors motion-reduce:transition-none ${category === item ? 'border-[var(--launcher-brand)] bg-[var(--launcher-selected)] font-medium text-[var(--launcher-brand-strong)]' : 'border-transparent text-[var(--launcher-ink)] hover:border-[var(--launcher-border)] hover:bg-white/70'}`}
                                 onClick={() => changeCatalogCategory(item)}
                               >
                                 {catalog?.categories[item]?.[language] ?? item}
@@ -882,22 +974,23 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
                       {!catalogLoading && filtered.length === 0 && <p className="col-span-full m-0 px-2 py-8 text-center text-sm text-[var(--launcher-muted)]">{t('download.catalog_empty')}</p>}
                       {(!catalogLoading || catalog != null) && visibleCatalogPlugins.map((plugin) => {
                         const installed = installedIds.has(plugin.name) || (plugin.npm != null && installedIds.has(plugin.npm))
+                        const installingThis = installingName !== '' && installingName === plugin.name
                         const description = plugin.description[language] ?? plugin.description.en ?? plugin.description.zh ?? ''
                         return (
                           <article key={`${plugin.owner}/${plugin.name}`} className="flex min-h-[148px] flex-col rounded-md border border-[var(--launcher-border)] bg-white p-3">
                             <div className="flex items-start justify-between gap-3">
                               <div className="min-w-0">
                                 <h3 className="m-0 truncate text-sm font-semibold">{plugin.name}</h3>
-                                <p className="m-0 mt-1 text-[10px] text-[var(--launcher-muted)]">{plugin.owner}</p>
+                                <p className="m-0 mt-1 text-xs text-[var(--launcher-muted)]">{plugin.owner}</p>
                               </div>
                               <Chip size="sm" variant="soft" color="accent">{plugin.category}</Chip>
                             </div>
                             <p className="mt-2 line-clamp-2 text-xs leading-5 text-[var(--launcher-muted)]">{description}</p>
                             <div className="mt-auto flex items-center justify-between gap-2 pt-3">
-                              <span className="truncate text-[10px] text-[var(--launcher-muted)]">{plugin.npm ?? plugin.install.split(' ').at(-1)}</span>
+                              <span className="truncate text-xs text-[var(--launcher-muted)]">{plugin.npm ?? plugin.install.split(' ').at(-1)}</span>
                               <div className="flex items-center gap-1">
                                 {plugin.url && <Button isIconOnly size="sm" variant="ghost" className="size-7 min-w-7 rounded-md" aria-label={t('download.open_repo')} onPress={() => { void openRepo(plugin.url) }}><ArrowUpRightFromSquare className="size-3.5" /></Button>}
-                                <Button size="sm" className="h-7 rounded-md bg-[var(--launcher-brand)] px-3 text-xs text-white" isDisabled={installed || installing || !target || targetHomeRunning} onPress={() => { void installCatalogPlugin(plugin) }}>{installed ? t('download.installed') : installingName === plugin.name ? t('download.installing') : t('download.install')}</Button>
+                                <Button size="sm" className={`h-7 rounded-md px-3 text-xs text-white ${installingThis ? 'bg-danger' : 'bg-[var(--launcher-brand)]'}`} isDisabled={installingThis ? cancellingInstall : installed || installing || !target || targetHomeRunning} onPress={() => { void (installingThis ? cancelInstall() : installCatalogPlugin(plugin)) }}>{installingThis ? (cancellingInstall ? t('download.stopping_install') : t('download.stop_install')) : installed ? t('download.installed') : t('download.install')}</Button>
                               </div>
                             </div>
                           </article>
@@ -905,33 +998,7 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
                       })}
                     </div>
                     {!catalogLoading && filtered.length > 0 && (
-                      <div className="sticky bottom-0 z-10 flex items-center justify-between border-t border-[var(--launcher-border)] bg-[var(--launcher-surface)]/95 px-4 py-2.5 backdrop-blur-sm">
-                        <span className="text-xs text-[var(--launcher-muted)]">{t('download.page_status', { current: catalogPage, total: totalCatalogPages })}</span>
-                        <div className="flex items-center gap-1">
-                          <Button
-                            isIconOnly
-                            size="sm"
-                            variant="ghost"
-                            className="size-8 min-w-8 rounded-md"
-                            aria-label={t('download.page_previous')}
-                            isDisabled={catalogPage <= 1}
-                            onPress={() => changeCatalogPage(catalogPage - 1)}
-                          >
-                            <ArrowLeft className="size-4" />
-                          </Button>
-                          <Button
-                            isIconOnly
-                            size="sm"
-                            variant="ghost"
-                            className="size-8 min-w-8 rounded-md"
-                            aria-label={t('download.page_next')}
-                            isDisabled={catalogPage >= totalCatalogPages}
-                            onPress={() => changeCatalogPage(catalogPage + 1)}
-                          >
-                            <ArrowRight className="size-4" />
-                          </Button>
-                        </div>
-                      </div>
+                      <PaginationBar page={catalogPage} totalPages={totalCatalogPages} onChange={changeCatalogPage} />
                     )}
                     <details className="border-t border-[var(--launcher-border)] px-5 py-4">
                       <summary className="cursor-pointer text-sm font-semibold">{t('download.advanced_title')}</summary>
@@ -942,7 +1009,7 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
                         </div>
                       )}
                       <textarea className="mt-3 min-h-20 w-full resize-y rounded-md border border-[var(--launcher-border)] bg-white px-3 py-2 font-mono text-xs outline-none focus:border-[var(--launcher-brand)]" placeholder={t('download.spec_placeholder')} value={specs} onChange={event => setSpecs(event.target.value)} disabled={!target || targetHomeRunning || installing} />
-                      <div className="mt-3 flex justify-end"><Button className="h-9 rounded-md bg-[var(--launcher-brand)] px-5 text-white" isDisabled={!specs.trim() || installing || !target || targetHomeRunning} onPress={() => { void installManualPackages() }}>{installing ? t('download.installing') : t('download.install_selected')}</Button></div>
+                      <div className="mt-3 flex justify-end"><Button className={`h-9 rounded-md px-5 text-white ${manualInstalling ? 'bg-danger' : 'bg-[var(--launcher-brand)]'}`} isDisabled={manualInstalling ? cancellingInstall : (!specs.trim() || installing || !target || targetHomeRunning)} onPress={() => { void (manualInstalling ? cancelInstall() : installManualPackages()) }}>{manualInstalling ? (cancellingInstall ? t('download.stopping_install') : t('download.stop_install')) : installing ? t('download.installing') : t('download.install_selected')}</Button></div>
                     </details>
                   </section>
                 </>
@@ -962,7 +1029,7 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
                     cancelling={cancellingInstall}
                     onSelect={selectPack}
                     onInstall={installPack}
-                    onCancel={cancelPackInstall}
+                    onCancel={cancelInstall}
                     onOpenRepo={openRepo}
                   />
                 )
@@ -1011,21 +1078,21 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <h3 className="m-0 truncate text-sm font-semibold">{plugin.name}</h3>
-                          <p className="m-0 mt-1 truncate font-mono text-[10px] text-[var(--launcher-muted)]">{plugin.id}</p>
+                          <p className="m-0 mt-1 truncate font-mono text-xs text-[var(--launcher-muted)]">{plugin.id}</p>
                         </div>
                         <Chip size="sm" variant="soft" color="accent">{categoryLabel}</Chip>
                       </div>
                       <p className="mt-3 line-clamp-3 text-xs leading-5 text-[var(--launcher-muted)]">{plugin.description || t('download.installed_no_description')}</p>
                       <div className="mt-auto flex items-center justify-between gap-2 pt-3">
                         <div className="flex min-w-0 items-center gap-2">
-                          <span className={`rounded-full px-2 py-1 text-[10px] font-medium ${plugin.bundled ? 'bg-[var(--launcher-selected)] text-[var(--launcher-brand-strong)]' : 'bg-[#f2f4f7] text-[#748095]'}`}>
+                          <span className={`rounded-full px-2 py-1 text-xs font-medium ${plugin.bundled ? 'bg-[var(--launcher-selected)] text-[var(--launcher-brand-strong)]' : 'bg-[#f2f4f7] text-[#748095]'}`}>
                             {plugin.bundled ? t('launcher.plugin_enabled_status') : t('launcher.plugin_disabled_status')}
                           </span>
-                          <code className="truncate text-[10px] text-[var(--launcher-muted)]">{plugin.version || '-'}</code>
+                          <code className="truncate text-xs text-[var(--launcher-muted)]">{plugin.version || '-'}</code>
                         </div>
                         <div className="flex items-center gap-1">
                           {plugin.repoUrl && <Button isIconOnly size="sm" variant="ghost" className="size-7 min-w-7 rounded-md" aria-label={t('download.open_repo')} onPress={() => { void openRepo(plugin.repoUrl) }}><ArrowUpRightFromSquare className="size-3.5" /></Button>}
-                          <Button size="sm" variant="outline" className="h-7 rounded-md border-[var(--launcher-brand)] px-2 text-[10px] text-[var(--launcher-brand-strong)]" isDisabled={busy || pluginActionBusy !== '' || targetHomeRunning || installing} onPress={() => { void toggleInstalledPlugin(plugin) }}>
+                          <Button size="sm" variant="outline" className="h-7 rounded-md border-[var(--launcher-brand)] px-2 text-xs text-[var(--launcher-brand-strong)]" isDisabled={busy || pluginActionBusy !== '' || targetHomeRunning || installing} onPress={() => { void toggleInstalledPlugin(plugin) }}>
                             <Power className="size-3" />
                             {plugin.bundled ? t('launcher.plugin_disable') : t('launcher.plugin_enable')}
                           </Button>
@@ -1064,16 +1131,30 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
             </Modal.Backdrop>
           </Modal>
 
-          {logs.length > 0 && (
+          {(installing || logs.length > 0) && (
             <section className="mt-4 overflow-hidden rounded-md border border-[var(--launcher-border)] bg-[#1b1f2a] text-white">
-              <div className="flex items-center justify-between border-b border-white/10 px-4 py-2 text-xs">
-                <span>{t('download.install_log')}</span>
-                <div className="flex items-center gap-1">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 px-4 py-2 text-xs">
+                <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                  <span>{t('download.install_log')}</span>
+                  {installingName !== '' && <span className="truncate text-white/70">{t('download.installing_name', { name: installingName })}</span>}
+                  {manualProgress && <span className="tabular-nums text-white/70">{t('download.install_progress_item', { completed: manualProgress.completed, total: manualProgress.total })}</span>}
+                </span>
+                <div className="flex flex-none items-center gap-1">
+                  {installing && (
+                    <Button size="sm" variant="ghost" className="h-6 rounded-md px-2 text-xs text-white" isDisabled={cancellingInstall} onPress={() => { void cancelInstall() }}>
+                      {cancellingInstall ? t('download.stopping_install') : t('download.stop_install')}
+                    </Button>
+                  )}
                   <Button isIconOnly size="sm" variant="ghost" className="size-6 min-w-6 rounded-md text-white" aria-label={t('download.copy_logs')} onPress={() => { void copyInstallLogs() }}><Copy className="size-3.5" /></Button>
-                  <Button isIconOnly size="sm" variant="ghost" className="size-6 min-w-6 rounded-md text-white" aria-label={t('download.clear_logs')} onPress={() => setLogs([])}><Xmark /></Button>
+                  <Button isIconOnly size="sm" variant="ghost" className="size-6 min-w-6 rounded-md text-white" aria-label={t('download.clear_logs')} isDisabled={installing} onPress={resetInstallLog}><Xmark /></Button>
                 </div>
               </div>
-              <pre className="m-0 max-h-48 overflow-auto whitespace-pre-wrap px-4 py-3 font-mono text-[11px] leading-5 text-white/80">{logs.join('\n')}</pre>
+              {logs.length === 0
+                ? <p className="m-0 px-4 py-3 text-xs text-white/60">{t('download.install_log_waiting')}</p>
+                : <pre className="m-0 max-h-48 overflow-auto whitespace-pre-wrap px-4 py-3 font-mono text-[11px] leading-5 text-white/80">{logs.join('\n')}</pre>}
+              {installLogTruncated && (
+                <p className="m-0 border-t border-white/10 px-4 py-2 text-xs text-white/60">{t('download.logs_truncated_note', { count: INSTALL_LOG_KEEP_LINES })}</p>
+              )}
             </section>
           )}
         </div>
@@ -1085,16 +1166,11 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
 function PaginationBar(props: { page: number, totalPages: number, onChange: (page: number) => void }) {
   const { t } = useTranslation()
   return (
-    <div className="sticky bottom-0 z-10 flex items-center justify-between border-t border-[var(--launcher-border)] bg-[var(--launcher-surface)]/95 px-4 py-2.5 backdrop-blur-sm">
-      <span className="text-xs text-[var(--launcher-muted)]">{t('download.page_status', { current: props.page, total: props.totalPages })}</span>
-      <div className="flex items-center gap-1">
-        <Button isIconOnly size="sm" variant="ghost" className="size-8 min-w-8 rounded-md" aria-label={t('download.page_previous')} isDisabled={props.page <= 1} onPress={() => props.onChange(props.page - 1)}>
-          <ArrowLeft className="size-4" />
-        </Button>
-        <Button isIconOnly size="sm" variant="ghost" className="size-8 min-w-8 rounded-md" aria-label={t('download.page_next')} isDisabled={props.page >= props.totalPages} onPress={() => props.onChange(props.page + 1)}>
-          <ArrowRight className="size-4" />
-        </Button>
-      </div>
-    </div>
+    <SharedPaginationBar
+      {...props}
+      statusText={t('download.page_status', { current: props.page, total: props.totalPages })}
+      previousLabel={t('download.page_previous')}
+      nextLabel={t('download.page_next')}
+    />
   )
 }

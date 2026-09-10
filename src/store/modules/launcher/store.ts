@@ -7,6 +7,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import i18next from 'i18next'
 import { defineStore } from 'valtio-define'
 import { toast } from '@/utils'
+import { errorHasCode, parseBackendError } from '@/utils/error-codes'
 import { providerErrorMessage } from '@/utils/provider-error'
 import { harness } from '../harness'
 import { updater } from '../updater'
@@ -128,7 +129,8 @@ export const launcher = defineStore({
         this.registry.activeInstanceId = instance.id
         if (providerIds.length > 0) {
           try {
-            await invoke('import_provider_templates', { instanceId: instance.id, ids: providerIds, overwrite: false })
+            const prepared = await invoke<{ digest: string, fingerprint: string }>('plan_instance_provider_change', { instanceId: instance.id, templateIds: providerIds, drafts: [], routeIdsToRemove: [], defaultModel: null })
+            await invoke('apply_instance_provider_change', { instanceId: instance.id, templateIds: providerIds, drafts: [], routeIdsToRemove: [], defaultModel: null, digest: prepared.digest, fingerprint: prepared.fingerprint })
           }
           catch (error) {
             this.error = `${i18next.t('providers.created_import_failed')} ${providerErrorMessage(error)}`
@@ -174,7 +176,7 @@ export const launcher = defineStore({
         this.registry.activeInstanceId = id
       }
       catch (error) {
-        if (String(error).includes('INSTANCE_RUNNING')) {
+        if (errorHasCode(error, 'INSTANCE_RUNNING')) {
           toast(i18next.t('launcher.stop_before_switching'), {
             placement: 'top',
             variant: 'warning',
@@ -260,8 +262,9 @@ export const launcher = defineStore({
           await this.refreshRunning()
           return false
         }
-        if (message.includes('INSTANCE_HOME_RUNNING')) {
-          const runningName = message.split(':').slice(2).join(':')
+        if (errorHasCode(message, 'INSTANCE_HOME_RUNNING')) {
+          // 载荷是 `<id>:<name>`；用户需要知道的是谁占用了这个 Home。
+          const runningName = parseBackendError(message).detail.split(':').slice(1).join(':')
           toast(i18next.t('launcher.same_home_running', { name: runningName }), {
             placement: 'top',
             variant: 'warning',

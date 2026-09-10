@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from '@/utils'
 import { providerErrorMessage } from '@/utils/provider-error'
+import ProviderSelect from './provider-select'
 
 export interface ProviderModel { id: string, name?: string, contextWindow?: number, maxTokens?: number }
 
@@ -154,10 +155,7 @@ export default function ProviderModels({ models, onChange, baseUrl, protocol, ap
       <div className="flex flex-wrap items-end gap-2 border-t border-[var(--launcher-border)] pt-3">
         <label className="min-w-0 flex-1 text-sm">
           {t('providers.test_model')}
-          <select className={`${inputClass} mt-1`} value={selectedTest} onChange={event => setTestModel(event.target.value)}>
-            {!models.length && <option value="">{t('providers.select_model_first')}</option>}
-            {models.map(model => <option key={model.id} value={model.id}>{model.id}</option>)}
-          </select>
+          <ProviderSelect label={t('providers.test_model')} value={selectedTest} disabled={disabled || !models.length} placeholder={t('providers.select_model_first')} options={models.map(model => ({ value: model.id, label: model.id }))} onChange={setTestModel} />
         </label>
         <Button type="button" variant="outline" isDisabled={disabled || !ready || !selectedTest} onPress={() => { void probe('test') }}>{t(pending === 'test' ? 'launcher.processing' : 'providers.test_connection')}</Button>
         <p className="m-0 w-full text-xs text-[var(--launcher-muted)]">{t('providers.test_hint')}</p>

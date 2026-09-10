@@ -44,6 +44,9 @@ export default function InstanceProviders({ instance, sharing, isRunning }: { in
   const [error, setError] = useState('')
   const [selected, setSelected] = useState('')
   const [editing, setEditing] = useState('')
+  const [mode, setMode] = useState<'list' | 'import' | 'add'>('list')
+  const [query, setQuery] = useState('')
+  const [operationBusy, setOperationBusy] = useState(false)
 
   const [reloadKey, setReloadKey] = useState(0)
 
@@ -85,21 +88,43 @@ export default function InstanceProviders({ instance, sharing, isRunning }: { in
     setReloadKey(key => key + 1)
   }
 
-  const route = view?.routes.find(item => item.id === (selected || view.routes[0]?.id))
+  const filteredRoutes = view?.routes.filter(item => `${item.id} ${item.displayName} ${item.baseUrl}`.toLowerCase().includes(query.toLowerCase())) ?? []
+  const route = filteredRoutes.find(item => item.id === selected) ?? filteredRoutes[0]
   const routeProvider = catalog?.status === 'ready' ? catalog.providers.find(item => item.id === route?.id) : undefined
   const isEditing = route !== undefined && editing === route.id
+
+  if (isEditing && view) {
+    return (
+      <>
+        <PageHeader title={`${instance.name} · ${route.displayName || route.id}`} description={t('providers.edit.action')} />
+        <ProviderEdit
+          key={route.id}
+          instanceId={instance.id}
+          route={route}
+          provider={routeProvider}
+          supportedProtocols={catalog?.status === 'ready' ? catalog.supportedProtocols : []}
+          view={view}
+          disabled={isRunning}
+          onApplied={() => {
+            refresh()
+            setEditing('')
+          }}
+          onClose={() => setEditing('')}
+        />
+      </>
+    )
+  }
 
   return (
     <>
       <PageHeader
-        title={t('launcher.instance_providers.title')}
-        description={t('launcher.instance_providers.scope_note')}
+        title={`${instance.name} · ${t('launcher.instance_providers.title')}`}
         actions={(
           <Button
             size="sm"
             variant="outline"
             className="h-9 rounded-md"
-            isDisabled={loading}
+            isDisabled={loading || operationBusy}
             onPress={refresh}
           >
             <ArrowRotateRight className={`size-4 ${loading ? 'animate-spin motion-reduce:animate-none' : ''}`} />
@@ -107,6 +132,10 @@ export default function InstanceProviders({ instance, sharing, isRunning }: { in
           </Button>
         )}
       />
+      <details className="mb-3 text-xs text-[var(--launcher-muted)]">
+        <summary className="cursor-pointer">{t('providers.help')}</summary>
+        <p>{t('launcher.instance_providers.scope_note')}</p>
+      </details>
 
       {isRunning && <StatusNotice className="mb-4" message={t('launcher.instance_providers.running_readonly')} />}
       {sharing !== null && (
@@ -114,23 +143,54 @@ export default function InstanceProviders({ instance, sharing, isRunning }: { in
       )}
       {view !== null && (
         <>
-          <ProviderAdd instanceId={instance.id} disabled={isRunning} onApplied={refresh} />
-          <ProviderImport instanceId={instance.id} disabled={isRunning} onApplied={refresh} />
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            {mode === 'list' && <input aria-label={t('providers.search')} placeholder={t('providers.search')} className="h-9 min-w-0 flex-1 rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)] px-3" value={query} onChange={event => setQuery(event.target.value)} />}
+            <Button className="h-9 rounded-md" variant={mode === 'list' ? 'primary' : 'outline'} isDisabled={operationBusy} onPress={() => setMode(mode === 'list' ? 'import' : 'list')}>{t(mode === 'list' ? 'providers.add' : 'providers.back_list')}</Button>
+            {mode !== 'list' && (
+              <>
+                <Button variant={mode === 'import' ? 'secondary' : 'ghost'} isDisabled={operationBusy} onPress={() => setMode('import')}>{t('providers.import')}</Button>
+                <Button variant={mode === 'add' ? 'secondary' : 'ghost'} isDisabled={isRunning || operationBusy} onPress={() => setMode('add')}>{t('providers.new_configuration')}</Button>
+              </>
+            )}
+          </div>
+          {mode === 'import' && (
+            <ProviderImport
+              onBusy={setOperationBusy}
+              instanceId={instance.id}
+              disabled={isRunning}
+              onApplied={() => {
+                refresh()
+                setMode('list')
+              }}
+            />
+          )}
+          {mode === 'add' && (
+            <ProviderAdd
+              onBusy={setOperationBusy}
+              initialOpen
+              instanceId={instance.id}
+              disabled={isRunning}
+              onApplied={() => {
+                refresh()
+                setMode('list')
+              }}
+            />
+          )}
         </>
       )}
 
       {error !== '' && <ErrorBanner className="mb-4" message={t('launcher.instance_providers.load_failed')} detail={error} />}
       {loading && view === null && <p role="status" className="m-0 py-8 text-center text-sm text-[var(--launcher-muted)]">{t('launcher.processing')}</p>}
 
-      {view !== null && (
+      {view !== null && mode === 'list' && (
         <>
-          <SectionCard className="mb-5" padded={false}>
+          <div className="mb-3 border-b border-[var(--launcher-border)]">
             <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
               <div className="min-w-0 text-sm">
                 <span className="text-xs text-[var(--launcher-muted)]">{t('launcher.instance_providers.default_model')}</span>
                 {view.defaultModel.declared
                   ? (
-                      <span className="font-medium">
+                      <span className="ml-2 font-medium">
                         {view.defaultModel.provider}
                         {' · '}
                         {view.defaultModel.model}
@@ -141,27 +201,27 @@ export default function InstanceProviders({ instance, sharing, isRunning }: { in
               </div>
               {view.defaultModel.declared && <StatusBadge tone={view.defaultModel.providerStatus === 'known' ? 'success' : 'neutral'}>{t(`launcher.instance_providers.default_status.${view.defaultModel.providerStatus}`)}</StatusBadge>}
             </div>
-          </SectionCard>
+          </div>
 
           {catalog?.status === 'unavailable' && (
             <StatusNotice className="mb-4" tone="neutral" message={t('launcher.instance_providers.catalog_unavailable')} />
           )}
 
-          {view.routes.length === 0
+          {filteredRoutes.length === 0
             ? (
-                <p className="m-0 rounded-md border border-dashed border-[var(--launcher-border)] p-8 text-center text-sm text-[var(--launcher-muted)]">{t('launcher.instance_providers.empty')}</p>
+                <p className="m-0 rounded-md border border-dashed border-[var(--launcher-border)] p-8 text-center text-sm text-[var(--launcher-muted)]">{t(query ? 'providers.no_results' : 'launcher.instance_providers.empty')}</p>
               )
             : (
-                <div className="grid gap-5 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
-                  <ul className="m-0 list-none space-y-2 p-0">
-                    {view.routes.map((item) => {
+                <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,240px)_minmax(0,1fr)]">
+                  <ul className={`${selected ? 'hidden lg:block' : ''} m-0 max-h-[55vh] list-none space-y-2 overflow-y-auto p-0`}>
+                    {filteredRoutes.map((item) => {
                       const source = routeSource(item, catalog ?? unavailableCatalog)
                       const active = item.id === route?.id
                       return (
                         <li key={item.id}>
                           <button
                             type="button"
-                            className={`w-full rounded-md border px-3 py-3 text-left transition-colors motion-reduce:transition-none ${active ? 'border-[var(--launcher-brand)] bg-[var(--launcher-selected)]' : 'border-[var(--launcher-border)] bg-[var(--launcher-surface)] hover:border-[var(--launcher-brand)]'}`}
+                            className={`w-full rounded-md px-3 py-3 text-left transition-colors motion-reduce:transition-none ${active ? 'bg-[var(--launcher-selected)]' : 'hover:bg-[var(--launcher-surface)]'}`}
                             onClick={() => {
                               // 换路由就收起上一条的编辑面板：表单初值来自回读，留着会变成陈旧状态。
                               if (selected !== item.id)
@@ -171,9 +231,8 @@ export default function InstanceProviders({ instance, sharing, isRunning }: { in
                           >
                             <span className="block min-w-0 truncate text-sm font-medium">{item.displayName || item.id}</span>
                             <span className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--launcher-muted)]">
-                              <span className="min-w-0 truncate font-mono">{item.id}</span>
-                              <StatusBadge tone={source === 'catalog' ? 'accent' : 'neutral'}>{t(`launcher.instance_providers.source.${source}`)}</StatusBadge>
-                              <StatusBadge tone={item.credential.source === 'file' ? 'success' : item.credential.source === 'ambient' ? 'neutral' : 'danger'}>{t(`launcher.instance_providers.credential.${item.credential.source}`)}</StatusBadge>
+                              <span>{t(`launcher.instance_providers.source.${source}`)}</span>
+                              {item.credential.source === 'unverifiable' && <StatusBadge tone="danger">{t('launcher.instance_providers.credential.unverifiable')}</StatusBadge>}
                             </span>
                           </button>
                         </li>
@@ -183,6 +242,7 @@ export default function InstanceProviders({ instance, sharing, isRunning }: { in
 
                   {route && (
                     <SectionCard
+                      className={selected ? 'min-w-0' : 'hidden min-w-0 lg:block'}
                       title={route.displayName || route.id}
                       description={route.id}
                       actions={!isEditing && !isRunning && (
@@ -192,49 +252,37 @@ export default function InstanceProviders({ instance, sharing, isRunning }: { in
                         </Button>
                       )}
                     >
-                      {isEditing
-                        ? (
-                            // key 绑定路由 id：切到另一条路由时表单必须按新的回读值重建。
-                            <ProviderEdit
-                              key={route.id}
-                              instanceId={instance.id}
-                              route={route}
-                              provider={routeProvider}
-                              supportedProtocols={catalog?.status === 'ready' ? catalog.supportedProtocols : []}
-                              view={view}
-                              disabled={isRunning}
-                              onApplied={refresh}
-                              onClose={() => setEditing('')}
-                            />
-                          )
-                        : (
-                            <>
-                              <dl className="m-0 grid gap-2 text-sm">
-                                <Row label={t('launcher.instance_providers.field_endpoint')} value={route.baseUrl || t(catalog?.status === 'ready' ? 'launcher.instance_providers.inherited_from_catalog' : 'launcher.instance_providers.not_pinned')} />
-                                <Row label={t('launcher.instance_providers.field_protocol')} value={route.protocol || t(catalog?.status === 'ready' ? 'launcher.instance_providers.inherited_from_catalog' : 'launcher.instance_providers.not_pinned')} />
-                                <Row label={t('launcher.instance_providers.field_models')} value={route.selection === 'subset' ? `${t('launcher.instance_providers.selection_subset')} · ${route.modelIds.length}` : t('launcher.instance_providers.selection_all')} />
-                                {route.overrides.length > 0 && <Row label={t('launcher.instance_providers.field_overrides')} value={String(route.overrides.length)} />}
-                                <Row label={t('launcher.instance_providers.field_credential_ref')} value={route.credential.declared ? route.credential.ref : t('launcher.instance_providers.credential.ambient')} />
-                              </dl>
-                              {route.unknownFields.length > 0 && (
-                                <p className="m-0 mt-4 rounded-md border border-[var(--launcher-border)] p-3 text-xs leading-5 text-[var(--launcher-muted)]">
-                                  {t('launcher.instance_providers.foreign_fields', { fields: route.unknownFields.join(', ') })}
-                                </p>
-                              )}
-                              {roles !== null && (
-                                <p className="m-0 mt-2 text-xs leading-5 text-[var(--launcher-muted)]">
-                                  {roles.source === 'runtime'
-                                    ? t(secretPositions(roles, route.id).length > 0 ? 'launcher.instance_providers.roles_runtime' : 'launcher.instance_providers.roles_runtime_none', { fields: secretPositions(roles, route.id).join(', ') })
-                                    : t('launcher.instance_providers.roles_unavailable')}
-                                </p>
-                              )}
-                              {route.selection === 'subset' && route.modelIds.length > 0 && (
-                                <div className="mt-4 flex flex-wrap gap-2">
-                                  {route.modelIds.map(model => <code key={model} className="rounded border border-[var(--launcher-border)] px-2 py-0.5 text-xs break-all">{model}</code>)}
-                                </div>
-                              )}
-                            </>
-                          )}
+                      <Button className="mb-3 lg:hidden" variant="outline" onPress={() => setSelected('')}>{t('providers.back_list')}</Button>
+                      <dl className="m-0 grid gap-2 text-sm">
+                        <Row label={t('launcher.instance_providers.field_endpoint')} value={route.baseUrl || t(catalog?.status === 'ready' ? 'launcher.instance_providers.inherited_from_catalog' : 'launcher.instance_providers.not_pinned')} />
+                        <Row label={t('launcher.instance_providers.field_protocol')} value={route.protocol || t(catalog?.status === 'ready' ? 'launcher.instance_providers.inherited_from_catalog' : 'launcher.instance_providers.not_pinned')} />
+                        <Row label={t('launcher.instance_providers.field_models')} value={route.selection === 'subset' ? `${t('launcher.instance_providers.selection_subset')} · ${route.modelIds.length}` : t('launcher.instance_providers.selection_all')} />
+                        {route.overrides.length > 0 && <Row label={t('launcher.instance_providers.field_overrides')} value={String(route.overrides.length)} />}
+                        <Row label={t('launcher.instance_providers.field_credential_ref')} value={route.credential.declared ? route.credential.ref : t('launcher.instance_providers.credential.ambient')} />
+                      </dl>
+                      <details className="mt-4 text-xs text-[var(--launcher-muted)]">
+                        <summary className="cursor-pointer">{t('providers.advanced_details')}</summary>
+                        {route.unknownFields.length > 0 && (
+                          <p className="m-0 mt-4 rounded-md border border-[var(--launcher-border)] p-3 text-xs leading-5 text-[var(--launcher-muted)]">
+                            {t('launcher.instance_providers.foreign_fields', { fields: route.unknownFields.join(', ') })}
+                          </p>
+                        )}
+                        {roles !== null && (
+                          <p className="m-0 mt-2 text-xs leading-5 text-[var(--launcher-muted)]">
+                            {roles.source === 'runtime'
+                              ? t(secretPositions(roles, route.id).length > 0 ? 'launcher.instance_providers.roles_runtime' : 'launcher.instance_providers.roles_runtime_none', { fields: secretPositions(roles, route.id).join(', ') })
+                              : t('launcher.instance_providers.roles_unavailable')}
+                          </p>
+                        )}
+                      </details>
+                      {route.selection === 'subset' && route.modelIds.length > 0 && (
+                        <details className="mt-4 text-sm">
+                          <summary className="cursor-pointer text-[var(--launcher-muted)]">{t('providers.models_selected', { count: route.modelIds.length })}</summary>
+                          <div className="mt-2 flex max-h-52 flex-wrap gap-2 overflow-y-auto">
+                            {route.modelIds.map(model => <code key={model} className="rounded border border-[var(--launcher-border)] px-2 py-0.5 text-xs break-all">{model}</code>)}
+                          </div>
+                        </details>
+                      )}
 
                       <ProviderRemove key={route.id} instanceId={instance.id} route={route} view={view} disabled={isRunning} onApplied={refresh} />
                     </SectionCard>

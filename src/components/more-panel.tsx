@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
 import { updater } from '@/store/modules/updater'
 import { toast } from '@/utils'
+import { ErrorBanner, PageHeader } from './launcher-ui'
 
 type MoreSection = 'updates' | 'logs' | 'links' | 'acknowledgements'
 
@@ -68,7 +69,7 @@ export default function MorePanel() {
 
 function UpdatesSection() {
   const { t } = useTranslation()
-  const { updateInfo, checking, updating, checkError } = useStore(updater)
+  const { updateInfo, checking, updating, checkError, progress, phaseTitle, phaseDetail, indeterminate } = useStore(updater)
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null)
   const [runtimes, setRuntimes] = useState<DshRuntime[]>([])
   const [switchingRuntime, setSwitchingRuntime] = useState(false)
@@ -114,17 +115,19 @@ function UpdatesSection() {
           ? t('launcher.more_updates.failed')
           : t('update.up_to_date')
 
+  const percent = Math.round(progress)
+
   return (
-    <main className="p-8">
+    <main className="p-6 md:p-8">
       <div className="mx-auto max-w-[900px]">
-        <div className="mb-7">
-          <div className="mb-2 text-xs font-semibold text-[var(--launcher-brand)]">{t('launcher.more_updates.eyebrow')}</div>
-          <h1 className="m-0 text-2xl font-semibold">{t('launcher.more_updates.title')}</h1>
-          <p className="mt-2 text-sm text-[var(--launcher-muted)]">{t('launcher.more_updates.description')}</p>
-        </div>
+        <PageHeader
+          className="mb-7"
+          title={t('launcher.more_updates.title')}
+          description={t('launcher.more_updates.description')}
+        />
 
         <section className="rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)] p-6">
-          <div className="flex items-start justify-between gap-5">
+          <div className="flex flex-wrap items-start justify-between gap-5">
             <div className="flex min-w-0 items-start gap-3">
               <div className="grid size-10 flex-none place-items-center rounded-md bg-[var(--launcher-selected)] text-[var(--launcher-brand)]"><CircleInfo className="size-5" /></div>
               <div className="min-w-0">
@@ -133,19 +136,47 @@ function UpdatesSection() {
               </div>
             </div>
             <Button
-              className="h-9 flex-none rounded-md bg-[var(--launcher-brand)] text-white"
+              className="h-9 flex-none rounded-md bg-[var(--launcher-brand)] text-[var(--launcher-on-brand)]"
               isDisabled={checking || updating}
               onPress={() => { void updater.checkManually() }}
             >
-              <ArrowRotateRight className={checking ? 'animate-spin' : undefined} />
+              <ArrowRotateRight className={checking ? 'animate-spin motion-reduce:animate-none' : undefined} />
               {checking ? t('launcher.more_updates.checking') : t('launcher.more_updates.check_action')}
             </Button>
           </div>
 
           <div className="mt-6 grid gap-3 sm:grid-cols-2">
             <VersionRow label={t('launcher.more_updates.current_dsh')} value={runtime?.dsh_version ?? t('launcher.version_unavailable')} />
-            <VersionRow label={t('launcher.more_updates.status')} value={status} accent={Boolean(updateInfo)} />
+            <VersionRow label={t('launcher.more_updates.status')} value={status} accent={Boolean(updateInfo) || updating} />
           </div>
+
+          {updating && (
+            <div className="mt-5 rounded-md border border-[var(--launcher-brand)]/25 bg-[var(--launcher-selected)] px-4 py-3">
+              <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                <span className="min-w-0 truncate text-sm font-medium text-[var(--launcher-brand-strong)]">{phaseTitle === '' ? t('update.dsh_updating') : phaseTitle}</span>
+                {!indeterminate && (
+                  <span className="flex-none text-xs tabular-nums text-[var(--launcher-brand-strong)]">
+                    {percent}
+                    %
+                  </span>
+                )}
+              </div>
+              {phaseDetail !== '' && <p className="m-0 mt-1 truncate text-xs leading-5 text-[var(--launcher-muted)]">{phaseDetail}</p>}
+              <div
+                role="progressbar"
+                aria-label={phaseTitle === '' ? t('update.dsh_updating') : phaseTitle}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={indeterminate ? undefined : percent}
+                className="mt-2.5 h-1 w-full overflow-hidden rounded-full bg-white/70"
+              >
+                {indeterminate
+                  ? <div className="h-full w-2/5 animate-pulse rounded-full bg-[var(--launcher-brand)] motion-reduce:animate-none" aria-hidden="true" />
+                  : <div className="h-full rounded-full bg-[var(--launcher-brand)] transition-[width] motion-reduce:transition-none" style={{ width: `${percent}%` }} />}
+              </div>
+              <p className="m-0 mt-2 text-xs leading-5 text-[var(--launcher-muted)]">{t('launcher.more_updates.updating_hint')}</p>
+            </div>
+          )}
 
           {updateInfo && !updating && (
             <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--launcher-brand)]/25 bg-[var(--launcher-selected)] px-4 py-3 text-sm">
@@ -162,8 +193,8 @@ function UpdatesSection() {
             </div>
           )}
 
-          {checkError && !checking && (
-            <p className="mt-4 text-xs leading-5 text-danger">{t('launcher.more_updates.failed_hint')}</p>
+          {checkError !== '' && !checking && !updating && (
+            <ErrorBanner className="mt-5" message={t('launcher.more_updates.failed_hint')} detail={checkError} />
           )}
         </section>
 
@@ -177,10 +208,13 @@ function UpdatesSection() {
                 type="button"
                 disabled={switchingRuntime || updating || item.selected || item.status !== 'ready'}
                 onClick={() => { void selectRuntime(item.id) }}
-                className={`flex min-w-0 items-center justify-between gap-4 rounded-md border px-4 py-3 text-left transition-colors disabled:cursor-default ${item.selected ? 'border-[var(--launcher-brand)] bg-[var(--launcher-selected)]' : 'border-[var(--launcher-border)] bg-white/60 hover:bg-[var(--launcher-selected)]/40'}`}
+                className={`flex min-w-0 items-center justify-between gap-4 rounded-md border px-4 py-3 text-left transition-colors motion-reduce:transition-none disabled:cursor-default ${item.selected ? 'border-[var(--launcher-brand)] bg-[var(--launcher-selected)]' : 'border-[var(--launcher-border)] bg-white/60 hover:bg-[var(--launcher-selected)]/40'}`}
               >
                 <span className="min-w-0">
-                  <span className="block text-sm font-medium">{t(`launcher.more_updates.runtime_source_${item.source}`)}</span>
+                  <span className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                    {t(`launcher.more_updates.runtime_source_${item.source}`)}
+                    {item.selected && <span className="rounded border border-[var(--launcher-brand)]/25 bg-[var(--launcher-surface)] px-1.5 py-0.5 text-xs font-normal text-[var(--launcher-brand-strong)]">{t('launcher.more_updates.runtime_in_use')}</span>}
+                  </span>
                   <span className="mt-1 block truncate text-xs text-[var(--launcher-muted)]" title={item.entryPath}>{item.entryPath}</span>
                 </span>
                 <span className="flex-none text-right text-xs text-[var(--launcher-muted)]">
@@ -191,12 +225,13 @@ function UpdatesSection() {
             ))}
             {runtimes.length === 0 && <p className="m-0 py-4 text-center text-sm text-[var(--launcher-muted)]">{t('launcher.more_updates.runtime_empty')}</p>}
           </div>
+          {switchingRuntime && <p role="status" className="m-0 mt-3 text-xs leading-5 text-[var(--launcher-muted)]">{t('launcher.more_updates.runtime_switching')}</p>}
         </section>
 
         <section className="mt-5 rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)] p-6">
           <h2 className="m-0 text-sm font-semibold">{t('launcher.more_updates.launcher_title')}</h2>
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            <VersionRow label={t('launcher.more_updates.launcher_version')} value={runtime?.app_version ?? '-'} />
+            <VersionRow label={t('launcher.more_updates.launcher_version')} value={runtime?.app_version ?? t('launcher.version_unavailable')} />
             <VersionRow label={t('launcher.more_updates.launcher_status')} value={t('launcher.more_updates.launcher_paused')} />
           </div>
         </section>
@@ -217,9 +252,30 @@ function VersionRow(props: { label: string, value: string, accent?: boolean }) {
 function LogsSection() {
   const { t } = useTranslation()
   const [logs, setLogs] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  // "清空"只清空显示，不删日志文件；完整内容仍留在 logs 里供复制与恢复。
+  const [hidden, setHidden] = useState(false)
+
+  async function load() {
+    setLoading(true)
+    setError('')
+    try {
+      setLogs(await invoke<string>('read_run_logs'))
+      setHidden(false)
+    }
+    catch (cause) {
+      setError(String(cause))
+    }
+    finally {
+      setLoading(false)
+    }
+  }
+
   useEffect(() => {
-    void invoke<string>('read_run_logs').then(setLogs).catch(() => {})
+    void load()
   }, [])
+
   async function copyLogs() {
     try {
       await navigator.clipboard.writeText(logs)
@@ -229,19 +285,50 @@ function LogsSection() {
       toast(t('launcher.more_logs.copy_failed'), { variant: 'danger' })
     }
   }
+
+  const lineCount = logs === '' ? 0 : logs.split('\n').length
+
   return (
-    <main className="p-8">
+    <main className="p-6 md:p-8">
       <div className="mx-auto max-w-[900px]">
-        <h1 className="m-0 text-2xl font-semibold">{t('launcher.more_logs.title')}</h1>
-        <p className="mt-2 text-sm text-[var(--launcher-muted)]">{t('launcher.more_logs.description')}</p>
-        <section className="mt-6 overflow-hidden rounded-md border border-[var(--launcher-border)] bg-[#111820] text-[#d8e1e8]">
-          <div className="flex h-10 items-center justify-between border-b border-white/10 px-4 text-xs text-white/70">
-            <span>{t('launcher.more_logs.title')}</span>
-            <Button isIconOnly size="sm" variant="ghost" className="size-7 min-w-7 rounded-md text-white disabled:opacity-40" aria-label={t('launcher.more_logs.copy')} isDisabled={!logs} onPress={() => { void copyLogs() }}>
-              <Copy className="size-3.5" />
+        <PageHeader
+          className="mb-6"
+          title={t('launcher.more_logs.title')}
+          description={t('launcher.more_logs.description')}
+          actions={(
+            <Button size="sm" variant="ghost" className="h-8 rounded-md" isDisabled={loading} onPress={() => { void load() }}>
+              <ArrowRotateRight className={loading ? 'animate-spin motion-reduce:animate-none' : undefined} />
+              {loading ? t('launcher.more_logs.loading') : t('launcher.more_logs.refresh')}
             </Button>
+          )}
+        />
+
+        {error !== '' && <ErrorBanner className="mb-4" message={t('launcher.more_logs.read_failed')} detail={error} />}
+
+        <section className="overflow-hidden rounded-md border border-[var(--launcher-border)] bg-[#111820] text-[#d8e1e8]">
+          <div className="flex h-10 flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-white/10 px-4 text-xs text-white/70">
+            <span className="min-w-0 truncate">
+              {hidden
+                ? t('launcher.more_logs.hidden_notice')
+                : t('launcher.more_logs.scope', { lines: lineCount })}
+            </span>
+            <span className="flex flex-none items-center gap-1">
+              {hidden && (
+                <Button size="sm" variant="ghost" className="h-7 rounded-md text-xs text-white" onPress={() => setHidden(false)}>
+                  {t('launcher.more_logs.show_again')}
+                </Button>
+              )}
+              <Button size="sm" variant="ghost" className="h-7 rounded-md text-xs text-white disabled:opacity-40" isDisabled={logs === '' || hidden} onPress={() => setHidden(true)}>
+                {t('launcher.more_logs.clear_view')}
+              </Button>
+              <Button isIconOnly size="sm" variant="ghost" className="size-7 min-w-7 rounded-md text-white disabled:opacity-40" aria-label={t('launcher.more_logs.copy_full')} isDisabled={logs === ''} onPress={() => { void copyLogs() }}>
+                <Copy className="size-3.5" />
+              </Button>
+            </span>
           </div>
-          <pre className="m-0 max-h-[520px] overflow-auto whitespace-pre-wrap break-words p-4 text-xs leading-5">{logs || t('launcher.more_logs.empty')}</pre>
+          {hidden
+            ? <div className="p-6 text-center text-xs leading-5 text-white/60">{t('launcher.more_logs.hidden_body')}</div>
+            : <pre className="m-0 max-h-[520px] overflow-auto p-4 text-xs leading-5 whitespace-pre-wrap break-words">{loading && logs === '' ? t('launcher.more_logs.loading') : logs || t('launcher.more_logs.empty')}</pre>}
         </section>
       </div>
     </main>
@@ -298,22 +385,20 @@ function LinksSection() {
   return (
     <main className="p-6 md:p-8">
       <div className="mx-auto max-w-[900px]">
-        <div className="mb-7 flex items-end justify-between gap-6">
-          <div>
-            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-[var(--launcher-brand)]">{t('launcher.more_links.eyebrow')}</div>
-            <h1 className="m-0 text-2xl font-semibold">{t('launcher.more_links.title')}</h1>
-            <p className="mt-2 max-w-[620px] text-sm leading-6 text-[var(--launcher-muted)]">{t('launcher.more_links.description')}</p>
-          </div>
-          <span className="hidden rounded-full border border-[var(--launcher-border)] bg-[var(--launcher-surface)] px-3 py-1 text-xs text-[var(--launcher-muted)] sm:inline-flex">{t('launcher.more_links.count', { count: links.length })}</span>
-        </div>
-        <div className="overflow-hidden rounded-lg border border-[var(--launcher-border)] bg-[var(--launcher-surface)]">
+        <PageHeader
+          className="mb-7"
+          title={t('launcher.more_links.title')}
+          description={t('launcher.more_links.description')}
+          actions={<span className="rounded-full border border-[var(--launcher-border)] bg-[var(--launcher-surface)] px-3 py-1 text-xs text-[var(--launcher-muted)]">{t('launcher.more_links.count', { count: links.length })}</span>}
+        />
+        <div className="overflow-hidden rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)]">
           {links.map((link, index) => (
-            <div key={link.id} className={`flex items-center gap-4 px-5 py-4 transition-colors hover:bg-[var(--launcher-selected)]/45 ${index > 0 ? 'border-t border-[var(--launcher-border)]' : ''}`}>
-              <div className="grid size-11 flex-none place-items-center rounded-md bg-[var(--launcher-brand)] text-[10px] font-bold tracking-[0.08em] text-white shadow-sm">{link.mark}</div>
+            <div key={link.id} className={`flex items-center gap-4 px-5 py-4 transition-colors hover:bg-[var(--launcher-selected)]/45 motion-reduce:transition-none ${index > 0 ? 'border-t border-[var(--launcher-border)]' : ''}`}>
+              <div className="grid size-8 flex-none place-items-center rounded-md bg-[var(--launcher-brand)] px-1 text-center text-xs font-bold tracking-[0.08em] text-[var(--launcher-on-brand)]">{link.mark}</div>
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
                   <h2 className="m-0 text-sm font-semibold">{link.title}</h2>
-                  <span className="truncate font-mono text-[11px] text-[var(--launcher-muted)]">{link.url}</span>
+                  <span className="truncate font-mono text-xs text-[var(--launcher-muted)]">{link.url}</span>
                 </div>
                 <p className="m-0 mt-1 text-xs leading-5 text-[var(--launcher-muted)]">{link.description}</p>
               </div>
@@ -350,12 +435,12 @@ function AcknowledgementsSection() {
   const renderEntries = (entries: typeof projects) => (
     <div className="overflow-hidden rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)]">
       {entries.map((entry, index) => (
-        <div key={entry.id} className={`flex items-center gap-4 px-5 py-4 transition-colors hover:bg-[var(--launcher-selected)]/45 ${index > 0 ? 'border-t border-[var(--launcher-border)]' : ''}`}>
-          <div className="grid size-11 flex-none place-items-center rounded-md bg-[var(--launcher-brand)] px-1 text-center text-[9px] font-bold text-white">{entry.mark}</div>
+        <div key={entry.id} className={`flex items-center gap-4 px-5 py-4 transition-colors hover:bg-[var(--launcher-selected)]/45 motion-reduce:transition-none ${index > 0 ? 'border-t border-[var(--launcher-border)]' : ''}`}>
+          <div className="grid size-8 flex-none place-items-center rounded-md bg-[var(--launcher-brand)] px-1 text-center text-xs font-bold text-[var(--launcher-on-brand)]">{entry.mark}</div>
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
               <h3 className="m-0 text-sm font-semibold">{entry.name}</h3>
-              <span className="truncate font-mono text-[11px] text-[var(--launcher-muted)]">{entry.url}</span>
+              <span className="truncate font-mono text-xs text-[var(--launcher-muted)]">{entry.url}</span>
             </div>
             <p className="m-0 mt-1 text-xs leading-5 text-[var(--launcher-muted)]">{entry.description}</p>
           </div>
@@ -370,11 +455,11 @@ function AcknowledgementsSection() {
   return (
     <main className="p-6 md:p-8">
       <div className="mx-auto max-w-[900px]">
-        <div className="mb-7">
-          <div className="mb-2 text-xs font-semibold text-[var(--launcher-brand)]">{t('launcher.acknowledgements.eyebrow')}</div>
-          <h1 className="m-0 text-2xl font-semibold">{t('launcher.acknowledgements.title')}</h1>
-          <p className="mt-2 max-w-[680px] text-sm leading-6 text-[var(--launcher-muted)]">{t('launcher.acknowledgements.description')}</p>
-        </div>
+        <PageHeader
+          className="mb-7"
+          title={t('launcher.acknowledgements.title')}
+          description={t('launcher.acknowledgements.description')}
+        />
         <section>
           <h2 className="mb-3 text-sm font-semibold">{t('launcher.acknowledgements.people_title')}</h2>
           {renderEntries(people)}

@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { saveStatusLabel, useSaveStatus } from '@/utils/save-status'
 import { ErrorBanner, PageHeader, StatusBadge } from './launcher-ui'
-import ProviderTemplates from './provider-templates'
+import ProviderWorkspace from './provider-workspace'
 
 interface PersonalizationConfig {
   language: 'zh-CN' | 'en-US'
@@ -169,7 +169,7 @@ export default function PersonalizationPanel() {
             />
           )}
 
-          {section === 'providers' && <ProviderTemplates />}
+          {section === 'providers' && <ProviderWorkspace />}
           {configError === '' && section === 'personalization' && (
             <section className="rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)] p-6">
               <h2 className="m-0 text-sm font-semibold">{t('launcher.personalization.appearance')}</h2>

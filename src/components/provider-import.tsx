@@ -8,6 +8,7 @@ import { providerErrorMessage } from '@/utils/provider-error'
 import { useSaveStatus } from '@/utils/save-status'
 import { ErrorBanner, SectionCard, StatusBadge, StatusNotice } from './launcher-ui'
 import ProviderPlanView from './provider-plan-view'
+import ProviderTemplates from './provider-templates'
 
 /**
  * 从模板应用到实例：先看变更预览，再决定应用。
@@ -16,15 +17,17 @@ import ProviderPlanView from './provider-plan-view'
  * 点"应用"本身就是对那份预览的确认。预览过期时后端会以 PROVIDER_SETTINGS_CHANGED
  * 中止，必须重新预览而不是重试同一个计划。
  */
-export default function ProviderImport({ instanceId, disabled, onApplied }: { instanceId: string, disabled: boolean, onApplied: () => void }) {
+export default function ProviderImport({ instanceId, disabled, onApplied, initialIds = [], allowManage = true, onBusy }: { instanceId: string, disabled: boolean, onApplied: () => void, initialIds?: string[], allowManage?: boolean, onBusy?: (busy: boolean) => void }) {
   const { t } = useTranslation()
   const save = useSaveStatus({ holdMs: 0 })
   const [items, setItems] = useState<ProviderTemplate[]>([])
-  const [ids, setIds] = useState<string[]>([])
+  const [ids, setIds] = useState<string[]>(initialIds)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [preview, setPreview] = useState<PlanResponse | null>(null)
   const [failure, setFailure] = useState('')
+  const [libraryOpen, setLibraryOpen] = useState(false)
+  const [revision, setRevision] = useState(0)
 
   useEffect(() => {
     let cancelled = false
@@ -48,7 +51,7 @@ export default function ProviderImport({ instanceId, disabled, onApplied }: { in
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [revision])
 
   /** 选择变化就让旧预览失效，避免"预览的是 A、应用的却是 B"。 */
   function toggle(id: string, checked: boolean) {
@@ -59,6 +62,7 @@ export default function ProviderImport({ instanceId, disabled, onApplied }: { in
 
   async function run<T>(task: () => Promise<T>, onDone: (value: T) => void) {
     setFailure('')
+    onBusy?.(true)
     try {
       await save.run(async () => {
         onDone(await task())
@@ -66,6 +70,9 @@ export default function ProviderImport({ instanceId, disabled, onApplied }: { in
     }
     catch (error) {
       setFailure(providerErrorMessage(error))
+    }
+    finally {
+      onBusy?.(false)
     }
   }
 
@@ -93,15 +100,49 @@ export default function ProviderImport({ instanceId, disabled, onApplied }: { in
   const selectionBlocked = disabled || loading || save.pending
   const previewBlocked = selectionBlocked || ids.length === 0
 
+  function closeLibrary(savedId?: string) {
+    setLoading(true)
+    setLibraryOpen(false)
+    setPreview(null)
+    if (savedId)
+      setIds([savedId])
+    setRevision(value => value + 1)
+  }
+
+  if (libraryOpen) {
+    return (
+      <section className="mb-5">
+        <Button className="mb-3" variant="outline" onPress={() => closeLibrary()}>{t('providers.library_return')}</Button>
+        <StatusNotice className="mb-4" message={t('providers.library_scope')} />
+        <ProviderTemplates onSaved={closeLibrary} />
+      </section>
+    )
+  }
+
   return (
     <SectionCard
-      title={t('providers.import')}
-      description={t('providers.home_scope')}
+      title={t(preview ? 'providers.preview' : 'providers.import')}
+      description={t('providers.library_import_hint')}
       className="mb-5"
-      actions={(
-        <Button size="sm" variant="outline" className="h-8 rounded-md" isDisabled={previewBlocked} onPress={() => { void previewChanges() }}>
-          {t('providers.preview')}
-        </Button>
+      actions={preview === null && (
+        <div className="flex flex-wrap gap-2">
+          {allowManage && (
+            <Button
+              size="sm"
+              variant="ghost"
+              isDisabled={save.pending}
+              onPress={() => {
+                setPreview(null)
+                setLibraryOpen(true)
+              }}
+            >
+              {t('providers.library_manage')}
+            </Button>
+          )}
+          <Button size="sm" variant="outline" className="h-8 rounded-md" isDisabled={previewBlocked} onPress={() => { void previewChanges() }}>
+            {t('providers.preview')}
+          </Button>
+        </div>
       )}
     >
       {disabled && <StatusNotice className="mb-3" message={t('launcher.instance_providers.running_readonly')} />}
@@ -109,9 +150,9 @@ export default function ProviderImport({ instanceId, disabled, onApplied }: { in
       {loadError !== '' && <ErrorBanner className="mb-3" message={t('providers.load_failed')} detail={loadError} />}
       {!loading && items.length === 0 && <p className="m-0 text-xs text-[var(--launcher-muted)]">{t('providers.empty')}</p>}
 
-      <div className="flex flex-wrap gap-3">
+      <div className={`${preview ? 'hidden' : 'grid'} max-h-64 gap-2 overflow-y-auto sm:grid-cols-2`}>
         {items.map(item => (
-          <label key={item.id} className="flex items-center gap-2 text-sm">
+          <label key={item.id} className={`flex items-center gap-2 rounded-md border p-3 text-sm ${ids.includes(item.id) ? 'border-[var(--launcher-brand)] bg-[var(--launcher-selected)]' : 'border-[var(--launcher-border)]'}`}>
             <input
               type="checkbox"
               className="size-4 accent-[var(--launcher-brand)]"
@@ -128,7 +169,7 @@ export default function ProviderImport({ instanceId, disabled, onApplied }: { in
       {preview !== null && (
         <ProviderPlanView preview={preview}>
           <div className="flex flex-wrap items-center gap-2">
-            <Button className="h-8 rounded-md bg-[var(--launcher-brand)] text-[var(--launcher-on-brand)]" isDisabled={save.pending || selected.length === 0} onPress={() => { void applyChanges() }}>
+            <Button className="h-8 rounded-md bg-[var(--launcher-brand)] text-[var(--launcher-on-brand)]" isDisabled={disabled || save.pending || selected.length === 0} onPress={() => { void applyChanges() }}>
               {t(save.pending ? 'launcher.processing' : 'providers.apply')}
             </Button>
             <Button size="sm" variant="ghost" className="h-8 rounded-md" isDisabled={save.pending} onPress={() => setPreview(null)}>{t('launcher.cancel')}</Button>

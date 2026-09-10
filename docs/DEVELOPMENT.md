@@ -22,8 +22,9 @@ Plus the platform toolchain:
 pnpm install      # install dependencies
 pnpm dev          # frontend dev server (Vite)
 pnpm typecheck    # frontend TypeScript check
-pnpm lint         # whole-repository lint; prefer scoped ESLint in a dirty checkout
+pnpm lint         # frontend + config lint (src-tauri embedded .mjs and .mimosa are excluded; those scripts are covered by pnpm test:provider); prefer scoped ESLint in a dirty checkout
 pnpm build        # TypeScript + production Vite build
+pnpm test:provider # provider embedded-script unit + integration tests (node --test)
 pnpm tauri dev    # run the desktop app in debug mode
 pnpm tauri build  # build installers
 ```
@@ -74,6 +75,8 @@ cargo test config::instance::tests
 cargo test service::plugin::install::tests
 ```
 
+On the frontend, `pnpm test:provider` runs `provider-import.test.mjs` and `provider-probe.test.mjs` together. Its integration and delegation cases need a resolvable real DSH runtime: the scripts look for a global install themselves, and when they find none those cases **self-skip while still reporting success** — indistinguishable from passing. Report the skipped count with the result; only `skipped 0` means those cases actually ran. Point at a runtime explicitly with `DSH_TEST_ENTRY=<dsh package>/lib/bin.js`. Probe cases send their requests to a `127.0.0.1` gateway, so they **never leave the machine and consume no real API usage**; usage is only possible when you press "Test connection" in the interface yourself.
+
 Format only changed Rust files. Do not rewrite unrelated files to resolve existing format differences. Report environment, passed checks and coverage gaps; compilation is not a clean-machine or cross-platform runtime test.
 
 ## Manual regression checklist
@@ -82,6 +85,7 @@ Format only changed Rust files. Do not rewrite unrelated files to resolve existi
 - Instances: independent Homes run together; shared Homes cannot. Verify separate windows/taskbar entries, independent close, minimize after success and visible failure.
 - Plugins: target Profile, per-item progress, cancellation/process tree, log copying and truncation disclosure; manual install rejects local-path specs; polluted pnpm output never writes invalid `allowBuilds` keys.
 - Data: temporary Homes for registry-only removal, shared-Home deletion impact, export outside Home, backup and error handling; deletion is refused while a DSH process left over from a previous launcher session still holds the Home; restarting the launcher does not delete the `.harness.pid` of a process that is still alive (the startup sweep clears the marker only once that process is confirmed dead, otherwise the guard loses its evidence); a corrupt `instances.json` recovers from `.bak`; one unusable Home record does not break loading the rest.
+- Providers: verify only on a **freshly created throwaway Home**. Four things must hold — the preview lists field by field what will change, and a file concurrently modified by DSH must abort the apply instead of overwriting; fields not owned by the template (especially `headers`) are preserved verbatim and only named; removing a provider **does not delete the stored credential**, and names still referenced by settings/`.env` are listed; the shared-Home instance and Profile counts match reality. "Test connection" calls the live endpoint and may consume usage — say so before running it. Embedded scripts are compiled in via `include_str!`, so editing a `.mjs` needs a rebuild and restart to take effect.
 - Updates: stop affected instances, recover failed replacement, preserve Homes, credentials and sessions.
 - Collaboration: dependency order, real outputs, explicit instance binding, failed contract writes, partial startup, cancellation and main-agent session retention.
 - UI: themes, narrow windows, both languages, disabled/error/empty states, keyboard and reduced motion; see [design rules](DESIGN.md).

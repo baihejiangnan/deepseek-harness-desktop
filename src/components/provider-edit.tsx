@@ -355,373 +355,375 @@ export default function ProviderEdit(props: {
 
   return (
     <div className="space-y-3">
-      {disabled && <StatusNotice message={t('launcher.instance_providers.running_readonly')} />}
-      {route.unknownFields.length > 0 && (
-        <StatusNotice tone="neutral" message={t('launcher.instance_providers.foreign_fields', { fields: route.unknownFields.join(', ') })} />
-      )}
-      {modelsError !== '' && <ErrorBanner message={t('providers.add.models_failed')} detail={modelsError} />}
+      <div className={preview ? 'hidden' : 'max-h-[48vh] space-y-3 overflow-y-auto pr-1'}>
+        {disabled && <StatusNotice message={t('launcher.instance_providers.running_readonly')} />}
+        {route.unknownFields.length > 0 && (
+          <StatusNotice tone="neutral" message={t('launcher.instance_providers.foreign_fields', { fields: route.unknownFields.join(', ') })} />
+        )}
+        {modelsError !== '' && <ErrorBanner message={t('providers.add.models_failed')} detail={modelsError} />}
 
-      <Layer title={t('providers.edit.layer_basic')} description={t('providers.edit.layer_basic_hint')} defaultOpen>
-        <Field label={t('providers.edit.route_id')} labelFor={`${formId}-route`} hint={t('providers.edit.route_id_hint')}>
-          <TextInput id={`${formId}-route`} value={route.id} disabled mono />
-        </Field>
+        <Layer title={t('providers.edit.layer_basic')} description={t('providers.edit.layer_basic_hint')} defaultOpen>
+          <Field label={t('providers.edit.route_id')} labelFor={`${formId}-route`} hint={t('providers.edit.route_id_hint')}>
+            <TextInput id={`${formId}-route`} value={route.id} disabled mono />
+          </Field>
 
-        <Field
-          label={t('providers.add.display_name')}
-          labelFor={`${formId}-name`}
-          required
-          error={name.trim() === '' ? t('providers.edit.need_name') : undefined}
-        >
-          <TextInput id={`${formId}-name`} value={name} disabled={disabled || save.pending} onChange={value => touch(setName, value)} />
-        </Field>
+          <Field
+            label={t('providers.add.display_name')}
+            labelFor={`${formId}-name`}
+            required
+            error={name.trim() === '' ? t('providers.edit.need_name') : undefined}
+          >
+            <TextInput id={`${formId}-name`} value={name} disabled={disabled || save.pending} onChange={value => touch(setName, value)} />
+          </Field>
 
-        <Field
-          label={t('providers.edit.endpoint')}
-          labelFor={`${formId}-base-url`}
-          hint={provider.baseUrl === '' ? t('providers.edit.endpoint_no_default') : t('providers.edit.inherited_value', { value: provider.baseUrl })}
-        >
-          <div className="flex items-center gap-2">
-            <TextInput
-              id={`${formId}-base-url`}
-              value={baseUrl}
-              mono
-              placeholder={provider.baseUrl}
-              disabled={disabled || save.pending}
-              onChange={value => touch(setBaseUrl, value.trim())}
-            />
-            {baseUrl !== '' && (
-              <Button size="sm" variant="outline" className="h-10 flex-none rounded-md" isDisabled={disabled || save.pending} onPress={() => touch(setBaseUrl, '')}>
-                {t('providers.edit.restore_default')}
-              </Button>
-            )}
-          </div>
-        </Field>
-
-        <Field
-          label={t('providers.edit.protocol')}
-          labelFor={`${formId}-protocol`}
-          hint={route.protocol === ''
-            ? t('providers.edit.protocol_inherited', { value: observedProtocols.join(', ') || t('providers.edit.protocol_unobserved') })
-            : t('providers.edit.protocol_pinned')}
-        >
-          <div className="flex items-center gap-2">
-            <select
-              id={`${formId}-protocol`}
-              className="h-10 w-full min-w-0 rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)] px-2 text-sm disabled:opacity-60"
-              value={protocol}
-              disabled={disabled || save.pending}
-              onChange={event => touch(setProtocol, event.target.value)}
-            >
-              <option value="">{t('providers.edit.protocol_follow')}</option>
-              {observedProtocols.map(item => <option key={item} value={item}>{item}</option>)}
-              {/* 已钉死但当前目录里没人用的协议：保留为可见选项，否则下拉会显示成空白。 */}
-              {protocol !== '' && !observedProtocols.includes(protocol) && <option value={protocol}>{protocol}</option>}
-            </select>
-            {protocol !== '' && (
-              <Button size="sm" variant="outline" className="h-10 flex-none rounded-md" isDisabled={disabled || save.pending} onPress={() => touch(setProtocol, '')}>
-                {t('providers.edit.restore_default')}
-              </Button>
-            )}
-          </div>
-        </Field>
-
-        <fieldset className="m-0 min-w-0 border-0 p-0" disabled={disabled || save.pending}>
-          <legend className="mb-1.5 text-xs font-medium">{t('providers.edit.credential')}</legend>
-          <div className="space-y-2">
-            {(['keep', 'replace', 'none'] as CredentialMode[]).map((mode) => {
-              const unavailable = mode === 'keep' && !route.credential.declared
-              return (
-                <label key={mode} className={`flex items-start gap-2 text-sm ${unavailable ? 'opacity-60' : ''}`}>
-                  <input
-                    type="radio"
-                    name={`${formId}-credential`}
-                    className="mt-1 size-4 flex-none accent-[var(--launcher-brand)]"
-                    checked={credentialMode === mode}
-                    disabled={unavailable}
-                    onChange={() => {
-                      setPreview(null)
-                      setCredentialMode(mode)
-                      if (mode !== 'replace')
-                        setApiKey('')
-                    }}
-                  />
-                  <span className="min-w-0">
-                    <span className="block">{t(`providers.edit.credential_mode.${mode}`)}</span>
-                    <span className="mt-0.5 block text-xs leading-5 text-[var(--launcher-muted)]">
-                      {t(`providers.edit.credential_mode.${mode}_hint`, { ref: route.credential.ref })}
-                    </span>
-                  </span>
-                </label>
-              )
-            })}
-          </div>
-          {credentialMode === 'replace' && (
-            <div className="mt-3 max-w-[420px]">
+          <Field
+            label={t('providers.edit.endpoint')}
+            labelFor={`${formId}-base-url`}
+            hint={provider.baseUrl === '' ? t('providers.edit.endpoint_no_default') : t('providers.edit.inherited_value', { value: provider.baseUrl })}
+          >
+            <div className="flex items-center gap-2">
               <TextInput
-                id={`${formId}-key`}
-                type="password"
-                autoComplete="new-password"
+                id={`${formId}-base-url`}
+                value={baseUrl}
                 mono
-                value={apiKey}
-                invalid={apiKey.trim() === ''}
+                placeholder={provider.baseUrl}
                 disabled={disabled || save.pending}
-                onChange={(value) => {
-                  setPreview(null)
-                  setApiKey(value)
-                }}
+                onChange={value => touch(setBaseUrl, value.trim())}
               />
-              <p className="m-0 mt-1.5 text-xs leading-5 text-[var(--launcher-muted)]">{t('providers.edit.credential_replace_hint_detail', { ref: route.credential.ref })}</p>
+              {baseUrl !== '' && (
+                <Button size="sm" variant="outline" className="h-10 flex-none rounded-md" isDisabled={disabled || save.pending} onPress={() => touch(setBaseUrl, '')}>
+                  {t('providers.edit.restore_default')}
+                </Button>
+              )}
+            </div>
+          </Field>
+
+          <Field
+            label={t('providers.edit.protocol')}
+            labelFor={`${formId}-protocol`}
+            hint={route.protocol === ''
+              ? t('providers.edit.protocol_inherited', { value: observedProtocols.join(', ') || t('providers.edit.protocol_unobserved') })
+              : t('providers.edit.protocol_pinned')}
+          >
+            <div className="flex items-center gap-2">
+              <select
+                id={`${formId}-protocol`}
+                className="h-10 w-full min-w-0 rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)] px-2 text-sm disabled:opacity-60"
+                value={protocol}
+                disabled={disabled || save.pending}
+                onChange={event => touch(setProtocol, event.target.value)}
+              >
+                <option value="">{t('providers.edit.protocol_follow')}</option>
+                {observedProtocols.map(item => <option key={item} value={item}>{item}</option>)}
+                {/* 已钉死但当前目录里没人用的协议：保留为可见选项，否则下拉会显示成空白。 */}
+                {protocol !== '' && !observedProtocols.includes(protocol) && <option value={protocol}>{protocol}</option>}
+              </select>
+              {protocol !== '' && (
+                <Button size="sm" variant="outline" className="h-10 flex-none rounded-md" isDisabled={disabled || save.pending} onPress={() => touch(setProtocol, '')}>
+                  {t('providers.edit.restore_default')}
+                </Button>
+              )}
+            </div>
+          </Field>
+
+          <fieldset className="m-0 min-w-0 border-0 p-0" disabled={disabled || save.pending}>
+            <legend className="mb-1.5 text-xs font-medium">{t('providers.edit.credential')}</legend>
+            <div className="space-y-2">
+              {(['keep', 'replace', 'none'] as CredentialMode[]).map((mode) => {
+                const unavailable = mode === 'keep' && !route.credential.declared
+                return (
+                  <label key={mode} className={`flex items-start gap-2 text-sm ${unavailable ? 'opacity-60' : ''}`}>
+                    <input
+                      type="radio"
+                      name={`${formId}-credential`}
+                      className="mt-1 size-4 flex-none accent-[var(--launcher-brand)]"
+                      checked={credentialMode === mode}
+                      disabled={unavailable}
+                      onChange={() => {
+                        setPreview(null)
+                        setCredentialMode(mode)
+                        if (mode !== 'replace')
+                          setApiKey('')
+                      }}
+                    />
+                    <span className="min-w-0">
+                      <span className="block">{t(`providers.edit.credential_mode.${mode}`)}</span>
+                      <span className="mt-0.5 block text-xs leading-5 text-[var(--launcher-muted)]">
+                        {t(`providers.edit.credential_mode.${mode}_hint`, { ref: route.credential.ref })}
+                      </span>
+                    </span>
+                  </label>
+                )
+              })}
+            </div>
+            {credentialMode === 'replace' && (
+              <div className="mt-3 max-w-[420px]">
+                <TextInput
+                  id={`${formId}-key`}
+                  type="password"
+                  autoComplete="new-password"
+                  mono
+                  value={apiKey}
+                  invalid={apiKey.trim() === ''}
+                  disabled={disabled || save.pending}
+                  onChange={(value) => {
+                    setPreview(null)
+                    setApiKey(value)
+                  }}
+                />
+                <p className="m-0 mt-1.5 text-xs leading-5 text-[var(--launcher-muted)]">{t('providers.edit.credential_replace_hint_detail', { ref: route.credential.ref })}</p>
+              </div>
+            )}
+
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 flex-none rounded-md"
+                isDisabled={testCandidate === null || testing}
+                onPress={() => { void testConnection() }}
+              >
+                {t(testing ? 'launcher.processing' : 'providers.add.test')}
+              </Button>
+              <span className="min-w-0 flex-1 text-xs leading-5 text-[var(--launcher-muted)]">
+                {testCandidate === null ? t('providers.edit.test_unavailable') : t('providers.add.test_hint')}
+              </span>
+              {testResult !== null && (
+                <span role="status" className={`min-w-0 flex-1 text-xs break-words ${testStale ? 'text-[var(--launcher-muted)]' : testResult.ok ? 'text-[var(--launcher-brand-strong)]' : 'text-danger'}`}>
+                  {testStale
+                    ? t('providers.add.test_stale', { model: testResult.modelId })
+                    : t('providers.add.test_result', { model: testResult.modelId, time: testResult.time, message: testResult.message })}
+                </span>
+              )}
+            </div>
+          </fieldset>
+        </Layer>
+
+        <Layer
+          title={t('providers.edit.layer_models')}
+          description={t('providers.edit.layer_models_hint')}
+          badge={<StatusBadge tone="neutral">{selection === 'subset' ? t('providers.edit.selection_subset', { count: models.length }) : t('providers.edit.selection_all', { count: provider.modelCount })}</StatusBadge>}
+        >
+          <div className="flex flex-wrap items-center gap-3 text-sm">
+            <label className="flex items-center gap-2">
+              <input
+                type="radio"
+                name={`${formId}-selection`}
+                className="accent-[var(--launcher-brand)]"
+                checked={selection === 'all'}
+                disabled={disabled || save.pending}
+                onChange={() => switchSelection('all')}
+              />
+              {t('providers.add.follow_catalog', { count: provider.modelCount })}
+            </label>
+            <label className="flex items-center gap-2">
+              <input
+                type="radio"
+                name={`${formId}-selection`}
+                className="accent-[var(--launcher-brand)]"
+                checked={selection === 'subset'}
+                disabled={disabled || save.pending}
+                onChange={() => switchSelection('subset')}
+              />
+              {t('providers.add.pick_subset', { count: models.length })}
+            </label>
+          </div>
+          <p className="m-0 text-xs leading-5 text-[var(--launcher-muted)]">
+            {selection === 'subset' ? t('providers.add.subset_warning') : t('providers.edit.all_mode_hint')}
+          </p>
+          <p className="m-0 text-xs leading-5 text-[var(--launcher-muted)]">{t('providers.edit.manual_models_unavailable')}</p>
+
+          {catalogModels === null && modelsError === '' && (
+            <p role="status" className="m-0 text-xs text-[var(--launcher-muted)]">{t('launcher.processing')}</p>
+          )}
+          {catalogModels !== null && (
+            <div className="rounded-md border border-[var(--launcher-border)]">
+              <div className="p-2">
+                <SearchInput
+                  label={t('providers.add.search_models')}
+                  value={modelQuery}
+                  disabled={disabled || save.pending}
+                  onChange={(value) => {
+                    setModelQuery(value)
+                    // 换搜索词就回到第一页，否则会停在越界页码上看到空列表。
+                    setModelPage(1)
+                  }}
+                />
+              </div>
+              <div className="max-h-64 overflow-y-auto border-t border-[var(--launcher-border)]">
+                {slice.length === 0 && <p className="m-0 p-3 text-xs text-[var(--launcher-muted)]">{t('providers.no_results')}</p>}
+                {slice.map(model => (
+                  <label key={model.id} className="flex items-start gap-2 border-b border-[var(--launcher-border)] px-3 py-2 text-sm last:border-b-0">
+                    <input
+                      type="checkbox"
+                      className="mt-1 size-4 flex-none accent-[var(--launcher-brand)]"
+                      checked={tuning.some(item => item.id === model.id)}
+                      disabled={disabled || save.pending}
+                      onChange={event => toggleModel(model, event.target.checked)}
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block min-w-0 break-all font-mono text-xs">{model.id}</span>
+                      <span className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--launcher-muted)]">
+                        <StatusBadge tone={model.protocolSupported ? 'neutral' : 'danger'}>{model.api}</StatusBadge>
+                        {model.contextWindow > 0 && <span className="tabular-nums">{model.contextWindow}</span>}
+                        {model.reasoning && <StatusBadge tone="accent">{t('providers.add.reasoning')}</StatusBadge>}
+                        {model.input.some(item => item !== 'text') && <StatusBadge tone="neutral">{model.input.filter(item => item !== 'text').join(', ')}</StatusBadge>}
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+              {pages > 1 && (
+                <div className="flex items-center justify-between gap-2 border-t border-[var(--launcher-border)] px-3 py-2 text-xs text-[var(--launcher-muted)]">
+                  <span className="tabular-nums">{t('providers.add.models_page', { current: page, total: pages, count: filtered.length })}</span>
+                  <div className="flex gap-1">
+                    <Button size="sm" variant="ghost" className="h-7 rounded-md" isDisabled={page <= 1} onPress={() => setModelPage(value => value - 1)}>{t('download.page_previous')}</Button>
+                    <Button size="sm" variant="ghost" className="h-7 rounded-md" isDisabled={page >= pages} onPress={() => setModelPage(value => value + 1)}>{t('download.page_next')}</Button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
-          <div className="mt-3 flex flex-wrap items-center gap-3">
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-8 flex-none rounded-md"
-              isDisabled={testCandidate === null || testing}
-              onPress={() => { void testConnection() }}
-            >
-              {t(testing ? 'launcher.processing' : 'providers.add.test')}
-            </Button>
-            <span className="min-w-0 flex-1 text-xs leading-5 text-[var(--launcher-muted)]">
-              {testCandidate === null ? t('providers.edit.test_unavailable') : t('providers.add.test_hint')}
-            </span>
-            {testResult !== null && (
-              <span role="status" className={`min-w-0 flex-1 text-xs break-words ${testStale ? 'text-[var(--launcher-muted)]' : testResult.ok ? 'text-[var(--launcher-brand-strong)]' : 'text-danger'}`}>
-                {testStale
-                  ? t('providers.add.test_stale', { model: testResult.modelId })
-                  : t('providers.add.test_result', { model: testResult.modelId, time: testResult.time, message: testResult.message })}
-              </span>
-            )}
-          </div>
-        </fieldset>
-      </Layer>
+          {orphanedDefault && (
+            <StatusNotice message={t('providers.edit.orphaned_default', { model: view.defaultModel.model })} />
+          )}
+        </Layer>
 
-      <Layer
-        title={t('providers.edit.layer_models')}
-        description={t('providers.edit.layer_models_hint')}
-        badge={<StatusBadge tone="neutral">{selection === 'subset' ? t('providers.edit.selection_subset', { count: models.length }) : t('providers.edit.selection_all', { count: provider.modelCount })}</StatusBadge>}
-      >
-        <div className="flex flex-wrap items-center gap-3 text-sm">
-          <label className="flex items-center gap-2">
-            <input
-              type="radio"
-              name={`${formId}-selection`}
-              className="accent-[var(--launcher-brand)]"
-              checked={selection === 'all'}
-              disabled={disabled || save.pending}
-              onChange={() => switchSelection('all')}
-            />
-            {t('providers.add.follow_catalog', { count: provider.modelCount })}
-          </label>
-          <label className="flex items-center gap-2">
-            <input
-              type="radio"
-              name={`${formId}-selection`}
-              className="accent-[var(--launcher-brand)]"
-              checked={selection === 'subset'}
-              disabled={disabled || save.pending}
-              onChange={() => switchSelection('subset')}
-            />
-            {t('providers.add.pick_subset', { count: models.length })}
-          </label>
-        </div>
-        <p className="m-0 text-xs leading-5 text-[var(--launcher-muted)]">
-          {selection === 'subset' ? t('providers.add.subset_warning') : t('providers.edit.all_mode_hint')}
-        </p>
-        <p className="m-0 text-xs leading-5 text-[var(--launcher-muted)]">{t('providers.edit.manual_models_unavailable')}</p>
-
-        {catalogModels === null && modelsError === '' && (
-          <p role="status" className="m-0 text-xs text-[var(--launcher-muted)]">{t('launcher.processing')}</p>
-        )}
-        {catalogModels !== null && (
-          <div className="rounded-md border border-[var(--launcher-border)]">
-            <div className="p-2">
-              <SearchInput
-                label={t('providers.add.search_models')}
-                value={modelQuery}
-                disabled={disabled || save.pending}
-                onChange={(value) => {
-                  setModelQuery(value)
-                  // 换搜索词就回到第一页，否则会停在越界页码上看到空列表。
-                  setModelPage(1)
-                }}
-              />
-            </div>
-            <div className="max-h-64 overflow-y-auto border-t border-[var(--launcher-border)]">
-              {slice.length === 0 && <p className="m-0 p-3 text-xs text-[var(--launcher-muted)]">{t('providers.no_results')}</p>}
-              {slice.map(model => (
-                <label key={model.id} className="flex items-start gap-2 border-b border-[var(--launcher-border)] px-3 py-2 text-sm last:border-b-0">
-                  <input
-                    type="checkbox"
-                    className="mt-1 size-4 flex-none accent-[var(--launcher-brand)]"
-                    checked={tuning.some(item => item.id === model.id)}
-                    disabled={disabled || save.pending}
-                    onChange={event => toggleModel(model, event.target.checked)}
-                  />
-                  <span className="min-w-0 flex-1">
-                    <span className="block min-w-0 break-all font-mono text-xs">{model.id}</span>
-                    <span className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--launcher-muted)]">
-                      <StatusBadge tone={model.protocolSupported ? 'neutral' : 'danger'}>{model.api}</StatusBadge>
-                      {model.contextWindow > 0 && <span className="tabular-nums">{model.contextWindow}</span>}
-                      {model.reasoning && <StatusBadge tone="accent">{t('providers.add.reasoning')}</StatusBadge>}
-                      {model.input.some(item => item !== 'text') && <StatusBadge tone="neutral">{model.input.filter(item => item !== 'text').join(', ')}</StatusBadge>}
-                    </span>
-                  </span>
-                </label>
-              ))}
-            </div>
-            {pages > 1 && (
-              <div className="flex items-center justify-between gap-2 border-t border-[var(--launcher-border)] px-3 py-2 text-xs text-[var(--launcher-muted)]">
-                <span className="tabular-nums">{t('providers.add.models_page', { current: page, total: pages, count: filtered.length })}</span>
-                <div className="flex gap-1">
-                  <Button size="sm" variant="ghost" className="h-7 rounded-md" isDisabled={page <= 1} onPress={() => setModelPage(value => value - 1)}>{t('download.page_previous')}</Button>
-                  <Button size="sm" variant="ghost" className="h-7 rounded-md" isDisabled={page >= pages} onPress={() => setModelPage(value => value + 1)}>{t('download.page_next')}</Button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {orphanedDefault && (
-          <StatusNotice message={t('providers.edit.orphaned_default', { model: view.defaultModel.model })} />
-        )}
-      </Layer>
-
-      <Layer
-        title={t('providers.edit.layer_tuning')}
-        description={t('providers.edit.layer_tuning_hint')}
-        badge={tuning.some(hasTuning) ? <StatusBadge tone="accent">{t('providers.edit.tuned_count', { count: tuning.filter(hasTuning).length })}</StatusBadge> : undefined}
-      >
-        {tuning.length === 0 && <p className="m-0 text-xs text-[var(--launcher-muted)]">{t('providers.edit.tuning_empty')}</p>}
-        <ul className="m-0 list-none space-y-3 p-0">
-          {tuning.map((entry) => {
-            const catalogEntry = catalogById.get(entry.id)
-            return (
-              <li key={entry.id} className="rounded-md border border-[var(--launcher-border)] px-3 py-2">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="min-w-0 break-all font-mono text-xs">{entry.id}</span>
-                  <div className="flex flex-none items-center gap-2">
-                    {catalogEntry === undefined && <StatusBadge tone="danger">{t('providers.edit.not_in_catalog')}</StatusBadge>}
-                    {hasTuning(entry) && (
-                      <Button size="sm" variant="ghost" className="h-7 rounded-md" isDisabled={disabled || save.pending} onPress={() => resetTuning(entry.id)}>
-                        {t('providers.edit.restore_default')}
-                      </Button>
-                    )}
+        <Layer
+          title={t('providers.edit.layer_tuning')}
+          description={t('providers.edit.layer_tuning_hint')}
+          badge={tuning.some(hasTuning) ? <StatusBadge tone="accent">{t('providers.edit.tuned_count', { count: tuning.filter(hasTuning).length })}</StatusBadge> : undefined}
+        >
+          {tuning.length === 0 && <p className="m-0 text-xs text-[var(--launcher-muted)]">{t('providers.edit.tuning_empty')}</p>}
+          <ul className="m-0 list-none space-y-3 p-0">
+            {tuning.map((entry) => {
+              const catalogEntry = catalogById.get(entry.id)
+              return (
+                <li key={entry.id} className="rounded-md border border-[var(--launcher-border)] px-3 py-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="min-w-0 break-all font-mono text-xs">{entry.id}</span>
+                    <div className="flex flex-none items-center gap-2">
+                      {catalogEntry === undefined && <StatusBadge tone="danger">{t('providers.edit.not_in_catalog')}</StatusBadge>}
+                      {hasTuning(entry) && (
+                        <Button size="sm" variant="ghost" className="h-7 rounded-md" isDisabled={disabled || save.pending} onPress={() => resetTuning(entry.id)}>
+                          {t('providers.edit.restore_default')}
+                        </Button>
+                      )}
+                    </div>
                   </div>
-                </div>
-                <div className="mt-2 flex flex-wrap gap-3">
-                  <NumberOption
-                    label={t('providers.edit.context_window')}
-                    value={entry.contextWindow}
-                    fallback={catalogEntry?.contextWindow}
-                    disabled={disabled || save.pending}
-                    onChange={value => tuneEntry(entry.id, { contextWindow: value })}
-                  />
-                  <NumberOption
-                    label={t('providers.edit.max_tokens')}
-                    value={entry.maxTokens}
-                    fallback={catalogEntry?.maxTokens}
-                    disabled={disabled || save.pending}
-                    onChange={value => tuneEntry(entry.id, { maxTokens: value })}
-                  />
-                </div>
-              </li>
-            )
-          })}
-        </ul>
-        <p className="m-0 text-xs leading-5 text-[var(--launcher-muted)]">{t('providers.edit.tuning_limits')}</p>
-      </Layer>
+                  <div className="mt-2 flex flex-wrap gap-3">
+                    <NumberOption
+                      label={t('providers.edit.context_window')}
+                      value={entry.contextWindow}
+                      fallback={catalogEntry?.contextWindow}
+                      disabled={disabled || save.pending}
+                      onChange={value => tuneEntry(entry.id, { contextWindow: value })}
+                    />
+                    <NumberOption
+                      label={t('providers.edit.max_tokens')}
+                      value={entry.maxTokens}
+                      fallback={catalogEntry?.maxTokens}
+                      disabled={disabled || save.pending}
+                      onChange={value => tuneEntry(entry.id, { maxTokens: value })}
+                    />
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
+          <p className="m-0 text-xs leading-5 text-[var(--launcher-muted)]">{t('providers.edit.tuning_limits')}</p>
+        </Layer>
 
-      <Layer
-        title={t('providers.edit.layer_default')}
-        description={t('providers.edit.layer_default_hint')}
-        badge={view.defaultModel.declared
-          ? <StatusBadge tone={view.defaultModel.provider === route.id ? 'accent' : 'neutral'}>{view.defaultModel.provider === route.id ? t('providers.edit.default_here', { model: view.defaultModel.model }) : t('providers.edit.default_elsewhere', { provider: view.defaultModel.provider })}</StatusBadge>
-          : undefined}
-      >
-        <div className="space-y-2">
-          {(['keep', 'set', 'clear'] as DefaultAction[]).map(action => (
-            <label key={action} className="flex items-start gap-2 text-sm">
-              <input
-                type="radio"
-                name={`${formId}-default`}
-                className="mt-1 size-4 flex-none accent-[var(--launcher-brand)]"
-                checked={defaultAction === action}
-                disabled={disabled || save.pending || (action === 'clear' && !view.defaultModel.declared)}
-                onChange={() => {
-                  setPreview(null)
-                  setDefaultAction(action)
-                }}
-              />
-              <span className="min-w-0">
-                <span className="block">{t(`providers.edit.default_action.${action}`)}</span>
-                <span className="mt-0.5 block text-xs leading-5 text-[var(--launcher-muted)]">{t(`providers.edit.default_action.${action}_hint`)}</span>
-              </span>
-            </label>
-          ))}
-        </div>
-
-        {defaultAction === 'set' && (
-          <div className="space-y-3">
-            <Field
-              label={t('providers.edit.default_model')}
-              labelFor={`${formId}-default-model`}
-              required
-              error={defaultModelId === '' ? t('providers.edit.need_default_model') : undefined}
-            >
-              <select
-                id={`${formId}-default-model`}
-                className="h-10 w-full min-w-0 rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)] px-2 text-sm disabled:opacity-60"
-                value={defaultModelId}
-                disabled={disabled || save.pending}
-                onChange={(event) => {
-                  setPreview(null)
-                  setDefaultModelId(event.target.value)
-                  setDefaultEffort('')
-                }}
-              >
-                <option value="">{t('providers.add.pick_default')}</option>
-                {(selection === 'subset' ? models : (catalogModels ?? []).map(item => ({ id: item.id } as ProviderModelView))).map(item => (
-                  <option key={item.id} value={item.id}>{item.id}</option>
-                ))}
-              </select>
-            </Field>
-
-            {/* 档位只列该模型实际观测到的取值：拿不到合法值就不做成自由文本。 */}
-            {defaultModelId !== '' && (
-              <Field
-                label={t('providers.edit.default_effort')}
-                labelFor={`${formId}-default-effort`}
-                hint={efforts.length === 0 ? t('providers.edit.default_effort_unobserved') : t('providers.edit.default_effort_hint')}
-              >
-                {efforts.length === 0
-                  ? <p className="m-0 text-xs text-[var(--launcher-muted)]">{t('providers.edit.default_effort_unobserved')}</p>
-                  : (
-                      <select
-                        id={`${formId}-default-effort`}
-                        className="h-10 w-full min-w-0 rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)] px-2 text-sm disabled:opacity-60"
-                        value={defaultEffort}
-                        disabled={disabled || save.pending}
-                        onChange={event => touch(setDefaultEffort, event.target.value)}
-                      >
-                        <option value="">{t('providers.edit.default_effort_provider')}</option>
-                        {efforts.map(item => <option key={item} value={item}>{item}</option>)}
-                      </select>
-                    )}
-              </Field>
-            )}
+        <Layer
+          title={t('providers.edit.layer_default')}
+          description={t('providers.edit.layer_default_hint')}
+          badge={view.defaultModel.declared
+            ? <StatusBadge tone={view.defaultModel.provider === route.id ? 'accent' : 'neutral'}>{view.defaultModel.provider === route.id ? t('providers.edit.default_here', { model: view.defaultModel.model }) : t('providers.edit.default_elsewhere', { provider: view.defaultModel.provider })}</StatusBadge>
+            : undefined}
+        >
+          <div className="space-y-2">
+            {(['keep', 'set', 'clear'] as DefaultAction[]).map(action => (
+              <label key={action} className="flex items-start gap-2 text-sm">
+                <input
+                  type="radio"
+                  name={`${formId}-default`}
+                  className="mt-1 size-4 flex-none accent-[var(--launcher-brand)]"
+                  checked={defaultAction === action}
+                  disabled={disabled || save.pending || (action === 'clear' && !view.defaultModel.declared)}
+                  onChange={() => {
+                    setPreview(null)
+                    setDefaultAction(action)
+                  }}
+                />
+                <span className="min-w-0">
+                  <span className="block">{t(`providers.edit.default_action.${action}`)}</span>
+                  <span className="mt-0.5 block text-xs leading-5 text-[var(--launcher-muted)]">{t(`providers.edit.default_action.${action}_hint`)}</span>
+                </span>
+              </label>
+            ))}
           </div>
+
+          {defaultAction === 'set' && (
+            <div className="space-y-3">
+              <Field
+                label={t('providers.edit.default_model')}
+                labelFor={`${formId}-default-model`}
+                required
+                error={defaultModelId === '' ? t('providers.edit.need_default_model') : undefined}
+              >
+                <select
+                  id={`${formId}-default-model`}
+                  className="h-10 w-full min-w-0 rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)] px-2 text-sm disabled:opacity-60"
+                  value={defaultModelId}
+                  disabled={disabled || save.pending}
+                  onChange={(event) => {
+                    setPreview(null)
+                    setDefaultModelId(event.target.value)
+                    setDefaultEffort('')
+                  }}
+                >
+                  <option value="">{t('providers.add.pick_default')}</option>
+                  {(selection === 'subset' ? models : (catalogModels ?? []).map(item => ({ id: item.id } as ProviderModelView))).map(item => (
+                    <option key={item.id} value={item.id}>{item.id}</option>
+                  ))}
+                </select>
+              </Field>
+
+              {/* 档位只列该模型实际观测到的取值：拿不到合法值就不做成自由文本。 */}
+              {defaultModelId !== '' && (
+                <Field
+                  label={t('providers.edit.default_effort')}
+                  labelFor={`${formId}-default-effort`}
+                  hint={efforts.length === 0 ? t('providers.edit.default_effort_unobserved') : t('providers.edit.default_effort_hint')}
+                >
+                  {efforts.length === 0
+                    ? <p className="m-0 text-xs text-[var(--launcher-muted)]">{t('providers.edit.default_effort_unobserved')}</p>
+                    : (
+                        <select
+                          id={`${formId}-default-effort`}
+                          className="h-10 w-full min-w-0 rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)] px-2 text-sm disabled:opacity-60"
+                          value={defaultEffort}
+                          disabled={disabled || save.pending}
+                          onChange={event => touch(setDefaultEffort, event.target.value)}
+                        >
+                          <option value="">{t('providers.edit.default_effort_provider')}</option>
+                          {efforts.map(item => <option key={item} value={item}>{item}</option>)}
+                        </select>
+                      )}
+                </Field>
+              )}
+            </div>
+          )}
+        </Layer>
+
+        {problems.length > 0 && (
+          <ul className="m-0 list-disc space-y-1 rounded-md border border-[var(--launcher-border)] px-6 py-2.5 text-xs leading-5 text-[var(--launcher-muted)]">
+            {problems.map(item => <li key={item} className="min-w-0 break-words">{item}</li>)}
+          </ul>
         )}
-      </Layer>
 
-      {problems.length > 0 && (
-        <ul className="m-0 list-disc space-y-1 rounded-md border border-[var(--launcher-border)] px-6 py-2.5 text-xs leading-5 text-[var(--launcher-muted)]">
-          {problems.map(item => <li key={item} className="min-w-0 break-words">{item}</li>)}
-        </ul>
-      )}
-
+      </div>
       {preview !== null && (
         <ProviderPlanView preview={preview}>
           <div className="flex flex-wrap items-center justify-end gap-2">
@@ -733,7 +735,7 @@ export default function ProviderEdit(props: {
         </ProviderPlanView>
       )}
 
-      <div className="flex flex-wrap items-center justify-end gap-2">
+      <div className={`${preview ? 'hidden' : 'flex'} flex-wrap items-center justify-end gap-2 border-t border-[var(--launcher-border)] pt-3`}>
         {save.phase === 'saved' && preview === null && <span role="status" className="mr-auto text-xs text-[var(--launcher-brand-strong)]">{t('providers.applied')}</span>}
         <Button size="sm" variant="outline" className="h-8 rounded-md" isDisabled={!editable || disabled || save.pending || problems.length > 0 || preview !== null} onPress={() => { void previewChanges() }}>
           {t('providers.preview')}
