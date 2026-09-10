@@ -121,7 +121,7 @@ export default function InstanceWizard(props: { onCancel?: () => void }) {
                       <label key={String(repair)} className={`flex cursor-pointer items-center gap-3 rounded-md border p-3 text-sm transition-colors focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--launcher-brand)] motion-reduce:transition-none ${repairAssistant === repair ? 'border-[var(--launcher-brand)] bg-[var(--launcher-selected)] text-[var(--launcher-brand-strong)]' : 'border-transparent text-[var(--launcher-muted)] hover:bg-[var(--launcher-surface)]'} ${submitting ? 'pointer-events-none opacity-60' : ''}`}>
                         <Icon className="size-5 shrink-0" />
                         <span className="flex-1 font-medium">{t(repair ? 'launcher.type.repair' : 'launcher.type.normal')}</span>
-                        <input type="radio" name="instance-type" value={repair ? 'repair' : 'normal'} checked={repairAssistant === repair} onChange={() => setRepairAssistant(repair)} className="size-4 shrink-0 accent-[var(--launcher-brand)]" />
+                        <input type="radio" name="instance-type" value={repair ? 'repair' : 'normal'} checked={repairAssistant === repair} onChange={() => setRepairAssistant(repair)} className="launcher-choice-control size-4 shrink-0 accent-[var(--launcher-brand)]" />
                       </label>
                     )
                   })}
@@ -177,7 +177,7 @@ export default function InstanceWizard(props: { onCancel?: () => void }) {
                           <div className="flex max-h-24 flex-wrap gap-3 overflow-y-auto p-1">
                             {providerTemplates.map(item => (
                               <label key={item.id} className="flex items-center">
-                                <input type="checkbox" className="mr-2 size-4 accent-[var(--launcher-brand)]" disabled={submitting} checked={providerIds.includes(item.id)} onChange={event => setProviderIds(event.target.checked ? [...providerIds, item.id] : providerIds.filter(id => id !== item.id))} />
+                                <input type="checkbox" className="launcher-choice-control mr-2 size-4 accent-[var(--launcher-brand)]" disabled={submitting} checked={providerIds.includes(item.id)} onChange={event => setProviderIds(event.target.checked ? [...providerIds, item.id] : providerIds.filter(id => id !== item.id))} />
                                 {item.name}
                               </label>
                             ))}

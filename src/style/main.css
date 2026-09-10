@@ -199,6 +199,12 @@ html[data-theme="light"] {
   --color-btn-danger-hover: color-mix(in srgb, var(--launcher-danger) 12%, transparent);
 }
 
+/* Native form controls otherwise inherit HeroUI's dark color scheme and render
+   unchecked radio/checkbox surfaces black inside the launcher's light palettes. */
+.launcher-choice-control {
+  color-scheme: light;
+}
+
 /* Color references supplied in Pictures/配色方案 are represented as launcher-only
    palettes. These variables never reach the instance WebView. */
 .launcher-theme-forest-teal {
