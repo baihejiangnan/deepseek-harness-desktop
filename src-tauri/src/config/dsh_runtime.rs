@@ -41,6 +41,8 @@ pub struct DshRuntime {
     pub writable: bool,
     pub update_supported: bool,
     pub selected: bool,
+    pub name: Option<String>,
+    pub custom: bool,
 }
 
 fn normalized_id(path: &Path) -> String {
@@ -68,12 +70,22 @@ fn normalized_id(path: &Path) -> String {
 fn package_root(entry: &Path) -> Option<PathBuf> {
     let mut current = entry.parent();
     while let Some(dir) = current {
-        if dir.file_name().is_some_and(|name| name == "dsh")
+        let is_package = fs::read_to_string(dir.join("package.json"))
+            .ok()
+            .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+            .and_then(|value| {
+                value
+                    .get("name")
+                    .and_then(|name| name.as_str())
+                    .map(str::to_owned)
+            })
+            .is_some_and(|name| name == "@deepseek-ai/dsh");
+        let is_installed_layout = dir.file_name().is_some_and(|name| name == "dsh")
             && dir
                 .parent()
                 .and_then(Path::file_name)
-                .is_some_and(|name| name == "@deepseek-ai")
-        {
+                .is_some_and(|name| name == "@deepseek-ai");
+        if is_package || is_installed_layout {
             return Some(dir.to_path_buf());
         }
         current = dir.parent();
@@ -85,6 +97,12 @@ fn version_from_root(root: &Path) -> Option<String> {
     let value: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(root.join("package.json")).ok()?).ok()?;
     value.get("version")?.as_str().map(str::to_owned)
+}
+
+fn package_name_from_root(root: &Path) -> Option<String> {
+    let value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(root.join("package.json")).ok()?).ok()?;
+    value.get("name")?.as_str().map(str::to_owned)
 }
 
 fn node_compatible(node: &Path) -> bool {
@@ -191,7 +209,27 @@ fn candidate_from_entry<R: Runtime>(app: &AppHandle<R>, entry: PathBuf) -> Optio
         writable,
         update_supported,
         selected: false,
+        name: None,
+        custom: false,
     })
+}
+
+fn entry_from_custom_path(path: &Path) -> PathBuf {
+    if path.is_dir() {
+        let direct = path.join(DSH_ENTRY_RELATIVE);
+        if direct.is_file() {
+            return direct;
+        }
+        // The native picker can only select folders. Accept selecting the
+        // package's `lib` folder directly instead of requiring users to move
+        // back to the package root or type the entry file by hand.
+        let lib_entry = path.join("bin.js");
+        if path.file_name().is_some_and(|name| name == "lib") && lib_entry.is_file() {
+            return lib_entry;
+        }
+        return path.join("lib/bin.js");
+    }
+    path.to_path_buf()
 }
 
 fn path_wrappers<R: Runtime>(app: &AppHandle<R>) -> Vec<PathBuf> {
@@ -253,17 +291,95 @@ pub fn discover<R: Runtime>(app: &AppHandle<R>) -> Vec<DshRuntime> {
             wrapper_entry(&wrapper)
         }
     }));
+    let custom_entries = setting.custom_dsh_runtimes.clone();
+    entries.extend(
+        custom_entries
+            .iter()
+            .map(|item| entry_from_custom_path(Path::new(&item.path))),
+    );
     let mut seen = HashSet::new();
     let mut runtimes: Vec<_> = entries
         .into_iter()
         .filter_map(|entry| candidate_from_entry(app, entry))
         .filter(|runtime| seen.insert(runtime.id.clone()))
         .collect();
+    for runtime in &mut runtimes {
+        if let Some(item) = custom_entries.iter().find(|item| {
+            normalized_id(&entry_from_custom_path(Path::new(&item.path))) == runtime.id
+        }) {
+            if runtime.source == DshRuntimeSource::External {
+                runtime.name = Some(item.name.clone());
+            }
+            runtime.custom = true;
+        }
+    }
     let selected_id = selected_id(&runtimes, setting.active_dsh_runtime_id.as_deref());
     for runtime in &mut runtimes {
         runtime.selected = selected_id.as_deref() == Some(runtime.id.as_str());
     }
     runtimes
+}
+
+pub fn add_custom<R: Runtime>(
+    app: &AppHandle<R>,
+    name: &str,
+    path: &str,
+) -> Result<DshRuntime, String> {
+    let name = name.trim();
+    let path = path.trim();
+    if name.is_empty() || name.chars().count() > 80 {
+        return Err("DSH_RUNTIME_NAME_INVALID:name must contain 1 to 80 characters".to_string());
+    }
+    if path.is_empty() {
+        return Err("DSH_RUNTIME_PATH_INVALID:path is empty".to_string());
+    }
+    let entry = entry_from_custom_path(Path::new(path));
+    let mut runtime = candidate_from_entry(app, entry).ok_or_else(|| {
+        "DSH_RUNTIME_PATH_INVALID:expected a @deepseek-ai/dsh package directory or lib/bin.js"
+            .to_string()
+    })?;
+    if package_name_from_root(&runtime.working_dir).as_deref() != Some("@deepseek-ai/dsh") {
+        return Err("DSH_RUNTIME_INVALID:package.json name must be @deepseek-ai/dsh".to_string());
+    }
+    if runtime.status != DshRuntimeStatus::Ready {
+        return Err(format!("DSH_RUNTIME_INVALID:{:?}", runtime.status));
+    }
+    let mut setting = super::get_store_dat_setting(app);
+    if setting
+        .custom_dsh_runtimes
+        .iter()
+        .any(|item| normalized_id(&entry_from_custom_path(Path::new(&item.path))) == runtime.id)
+    {
+        return Err("DSH_RUNTIME_ALREADY_EXISTS:this runtime is already pinned".to_string());
+    }
+    setting.custom_dsh_runtimes.push(super::CustomDshRuntime {
+        name: name.to_string(),
+        path: path.to_string(),
+    });
+    super::set_store_dat_setting(app, setting);
+    if runtime.source == DshRuntimeSource::External {
+        runtime.name = Some(name.to_string());
+    }
+    runtime.custom = true;
+    Ok(runtime)
+}
+
+pub fn remove_custom<R: Runtime>(app: &AppHandle<R>, id: &str) -> Result<(), String> {
+    let mut setting = super::get_store_dat_setting(app);
+    if setting.active_dsh_runtime_id.as_deref() == Some(id) {
+        return Err(
+            "DSH_RUNTIME_IN_USE:select another runtime before removing this one".to_string(),
+        );
+    }
+    let before = setting.custom_dsh_runtimes.len();
+    setting
+        .custom_dsh_runtimes
+        .retain(|item| normalized_id(&entry_from_custom_path(Path::new(&item.path))) != id);
+    if setting.custom_dsh_runtimes.len() == before {
+        return Err(format!("DSH_RUNTIME_NOT_FOUND:{id}"));
+    }
+    super::set_store_dat_setting(app, setting);
+    Ok(())
 }
 
 pub fn active<R: Runtime>(app: &AppHandle<R>) -> Option<DshRuntime> {
@@ -380,6 +496,20 @@ mod tests {
         assert_eq!(first, second);
     }
 
+    #[test]
+    fn custom_directory_resolves_to_cli_entry() {
+        let root =
+            std::env::temp_dir().join(format!("dsh-custom-path-test-{}", std::process::id()));
+        fs::create_dir_all(root.join("lib")).expect("create fixture");
+        fs::write(root.join("lib/bin.js"), "#!/usr/bin/env node").expect("write fixture");
+        assert_eq!(entry_from_custom_path(&root), root.join("lib/bin.js"));
+        assert_eq!(
+            entry_from_custom_path(&root.join("lib")),
+            root.join("lib/bin.js")
+        );
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
     fn runtime(id: &str, source: DshRuntimeSource, status: DshRuntimeStatus) -> DshRuntime {
         DshRuntime {
             id: id.to_string(),
@@ -392,6 +522,8 @@ mod tests {
             writable: true,
             update_supported: true,
             selected: false,
+            name: None,
+            custom: false,
         }
     }
 
@@ -482,9 +614,8 @@ mod tests {
     #[test]
     fn pnpm_update_is_pinned_to_detected_global_dir() {
         let mut runtime = runtime("pnpm", DshRuntimeSource::Pnpm, DshRuntimeStatus::Ready);
-        runtime.working_dir = PathBuf::from(
-            "C:/pnpm/global/5/.pnpm/pkg/node_modules/@deepseek-ai/dsh",
-        );
+        runtime.working_dir =
+            PathBuf::from("C:/pnpm/global/5/.pnpm/pkg/node_modules/@deepseek-ai/dsh");
         let args = package_manager_update_args(&runtime).expect("pnpm args");
         assert_eq!(args[0], "--global-dir");
         assert_eq!(args[1], Path::new("C:/pnpm/global/5").as_os_str());

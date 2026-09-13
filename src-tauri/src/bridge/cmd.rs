@@ -642,6 +642,39 @@ pub async fn list_dsh_runtimes(app_handle: AppHandle) -> Result<Vec<config::DshR
 }
 
 #[tauri::command]
+pub async fn choose_dsh_runtime_path() -> Result<Option<String>, String> {
+    ensure_launcher_update_context()?;
+    let picked = rfd::AsyncFileDialog::new()
+        .set_title("Select a DSH package directory")
+        .pick_folder()
+        .await;
+    Ok(picked.map(|handle| handle.path().to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+pub async fn add_custom_dsh_runtime(
+    app_handle: AppHandle,
+    name: String,
+    path: String,
+) -> Result<config::DshRuntime, String> {
+    ensure_launcher_update_context()?;
+    config::add_custom(&app_handle, &name, &path)
+}
+
+#[tauri::command]
+pub async fn remove_custom_dsh_runtime(
+    app_handle: AppHandle,
+    runtime_id: String,
+) -> Result<(), String> {
+    ensure_launcher_update_context()?;
+    let _mutation_guard = RuntimeMutationGuard::acquire()?;
+    if !list_running_instances()?.is_empty() || workflow::has_owned_process() {
+        return Err("DSH_RUNTIME_IN_USE:stop all instances before changing runtimes".to_string());
+    }
+    config::remove_custom(&app_handle, &runtime_id)
+}
+
+#[tauri::command]
 pub async fn select_dsh_runtime(
     app_handle: AppHandle,
     runtime_id: String,

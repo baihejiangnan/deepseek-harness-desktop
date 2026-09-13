@@ -25,6 +25,18 @@ interface DshRuntime {
   writable: boolean
   updateSupported: boolean
   selected: boolean
+  name: string | null
+  custom: boolean
+}
+
+function runtimeErrorDescription(t: (key: string) => string, error: unknown) {
+  const message = String(error)
+  const code = message.match(/^([A-Z][A-Z0-9_]+)\s*:/)?.[1]
+
+  if (code === 'DSH_RUNTIME_PATH_INVALID')
+    return t('launcher.more_updates.runtime_error_path_invalid')
+
+  return message
 }
 
 export default function MorePanel() {
@@ -73,6 +85,9 @@ function UpdatesSection() {
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null)
   const [runtimes, setRuntimes] = useState<DshRuntime[]>([])
   const [switchingRuntime, setSwitchingRuntime] = useState(false)
+  const [addingRuntime, setAddingRuntime] = useState(false)
+  const [runtimeName, setRuntimeName] = useState('')
+  const [runtimePath, setRuntimePath] = useState('')
 
   useEffect(() => {
     void invoke<RuntimeInfo>('get_runtime_info').then(setRuntime).catch(() => {})
@@ -94,6 +109,45 @@ function UpdatesSection() {
     }
     catch (error) {
       toast(t('launcher.more_updates.runtime_select_failed'), { description: String(error), variant: 'danger', placement: 'bottom end' })
+    }
+    finally {
+      setSwitchingRuntime(false)
+    }
+  }
+
+  async function browseRuntime() {
+    const path = await invoke<string | null>('choose_dsh_runtime_path')
+    if (path)
+      setRuntimePath(path)
+  }
+
+  async function addRuntime() {
+    setSwitchingRuntime(true)
+    try {
+      await invoke('add_custom_dsh_runtime', { name: runtimeName, path: runtimePath })
+      setRuntimes(await invoke<DshRuntime[]>('list_dsh_runtimes'))
+      setRuntimeName('')
+      setRuntimePath('')
+      setAddingRuntime(false)
+      toast(t('launcher.more_updates.runtime_added'), { variant: 'accent', placement: 'bottom end' })
+    }
+    catch (error) {
+      toast(t('launcher.more_updates.runtime_add_failed'), { description: runtimeErrorDescription(t, error), variant: 'danger', placement: 'bottom end' })
+    }
+    finally {
+      setSwitchingRuntime(false)
+    }
+  }
+
+  async function removeRuntime(runtimeId: string) {
+    setSwitchingRuntime(true)
+    try {
+      await invoke('remove_custom_dsh_runtime', { runtimeId })
+      setRuntimes(await invoke<DshRuntime[]>('list_dsh_runtimes'))
+      toast(t('launcher.more_updates.runtime_removed'), { variant: 'accent', placement: 'bottom end' })
+    }
+    catch (error) {
+      toast(t('launcher.more_updates.runtime_remove_failed'), { description: String(error), variant: 'danger', placement: 'bottom end' })
     }
     finally {
       setSwitchingRuntime(false)
@@ -199,29 +253,48 @@ function UpdatesSection() {
         </section>
 
         <section className="mt-5 rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)] p-6">
-          <h2 className="m-0 text-sm font-semibold">{t('launcher.more_updates.runtime_title')}</h2>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="m-0 text-sm font-semibold">{t('launcher.more_updates.runtime_title')}</h2>
+            <Button size="sm" variant="secondary" className="h-8 rounded-md" isDisabled={switchingRuntime || updating} onPress={() => setAddingRuntime(value => !value)}>
+              {addingRuntime ? t('launcher.more_updates.runtime_cancel') : t('launcher.more_updates.runtime_add')}
+            </Button>
+          </div>
           <p className="mt-1 text-xs leading-5 text-[var(--launcher-muted)]">{t('launcher.more_updates.runtime_description')}</p>
+          {addingRuntime && (
+            <div className="mt-4 grid gap-3 rounded-md border border-[var(--launcher-border)] bg-white/60 p-4">
+              <label className="grid gap-1 text-xs text-[var(--launcher-muted)]">
+                {t('launcher.more_updates.runtime_name')}
+                <input className="h-9 rounded-md border border-[var(--launcher-border)] bg-white px-3 text-sm text-[var(--launcher-ink)] outline-none focus:border-[var(--launcher-brand)]" value={runtimeName} maxLength={80} onChange={event => setRuntimeName(event.target.value)} />
+              </label>
+              <label className="grid gap-1 text-xs text-[var(--launcher-muted)]">
+                {t('launcher.more_updates.runtime_path')}
+                <span className="flex min-w-0 gap-2">
+                  <input className="h-9 min-w-0 flex-1 rounded-md border border-[var(--launcher-border)] bg-white px-3 text-sm text-[var(--launcher-ink)] outline-none focus:border-[var(--launcher-brand)]" value={runtimePath} onChange={event => setRuntimePath(event.target.value)} />
+                  <Button size="sm" variant="secondary" className="h-9 rounded-md" onPress={() => { void browseRuntime() }}>{t('launcher.more_updates.runtime_browse')}</Button>
+                </span>
+              </label>
+              <p className="m-0 text-xs leading-5 text-[var(--launcher-muted)]">{t('launcher.more_updates.runtime_add_hint')}</p>
+              <div><Button size="sm" className="h-8 rounded-md bg-[var(--launcher-brand)] text-[var(--launcher-on-brand)]" isDisabled={runtimeName.trim() === '' || runtimePath.trim() === '' || switchingRuntime} onPress={() => { void addRuntime() }}>{t('launcher.more_updates.runtime_add_confirm')}</Button></div>
+            </div>
+          )}
           <div className="mt-4 grid gap-2">
             {runtimes.map(item => (
-              <button
-                key={item.id}
-                type="button"
-                disabled={switchingRuntime || updating || item.selected || item.status !== 'ready'}
-                onClick={() => { void selectRuntime(item.id) }}
-                className={`flex min-w-0 items-center justify-between gap-4 rounded-md border px-4 py-3 text-left transition-colors motion-reduce:transition-none disabled:cursor-default ${item.selected ? 'border-[var(--launcher-brand)] bg-[var(--launcher-selected)]' : 'border-[var(--launcher-border)] bg-white/60 hover:bg-[var(--launcher-selected)]/40'}`}
-              >
-                <span className="min-w-0">
-                  <span className="flex flex-wrap items-center gap-2 text-sm font-medium">
-                    {t(`launcher.more_updates.runtime_source_${item.source}`)}
-                    {item.selected && <span className="rounded border border-[var(--launcher-brand)]/25 bg-[var(--launcher-surface)] px-1.5 py-0.5 text-xs font-normal text-[var(--launcher-brand-strong)]">{t('launcher.more_updates.runtime_in_use')}</span>}
+              <div key={item.id} className={`flex min-w-0 items-center rounded-md border transition-colors motion-reduce:transition-none ${item.selected ? 'border-[var(--launcher-brand)] bg-[var(--launcher-selected)]' : 'border-[var(--launcher-border)] bg-white/60'}`}>
+                <button type="button" disabled={switchingRuntime || updating || item.selected || item.status !== 'ready'} onClick={() => { void selectRuntime(item.id) }} className="flex min-w-0 flex-1 items-center justify-between gap-4 px-4 py-3 text-left disabled:cursor-default">
+                  <span className="min-w-0">
+                    <span className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                      {item.name ?? t(`launcher.more_updates.runtime_source_${item.source}`)}
+                      {item.selected && <span className="rounded border border-[var(--launcher-brand)]/25 bg-[var(--launcher-surface)] px-1.5 py-0.5 text-xs font-normal text-[var(--launcher-brand-strong)]">{t('launcher.more_updates.runtime_in_use')}</span>}
+                    </span>
+                    <span className="mt-1 block truncate text-xs text-[var(--launcher-muted)]" title={item.entryPath}>{item.entryPath}</span>
                   </span>
-                  <span className="mt-1 block truncate text-xs text-[var(--launcher-muted)]" title={item.entryPath}>{item.entryPath}</span>
-                </span>
-                <span className="flex-none text-right text-xs text-[var(--launcher-muted)]">
-                  <span className="block">{item.version ?? t('launcher.version_unavailable')}</span>
-                  <span className="mt-1 block">{t(`launcher.more_updates.runtime_status_${item.status}`)}</span>
-                </span>
-              </button>
+                  <span className="flex-none text-right text-xs text-[var(--launcher-muted)]">
+                    <span className="block">{item.version ?? t('launcher.version_unavailable')}</span>
+                    <span className="mt-1 block">{t(`launcher.more_updates.runtime_status_${item.status}`)}</span>
+                  </span>
+                </button>
+                {item.custom && <Button size="sm" variant="ghost" className="mr-2 h-8 flex-none rounded-md" isDisabled={item.selected || switchingRuntime || updating} onPress={() => { void removeRuntime(item.id) }}>{t('launcher.more_updates.runtime_remove')}</Button>}
+              </div>
             ))}
             {runtimes.length === 0 && <p className="m-0 py-4 text-center text-sm text-[var(--launcher-muted)]">{t('launcher.more_updates.runtime_empty')}</p>}
           </div>

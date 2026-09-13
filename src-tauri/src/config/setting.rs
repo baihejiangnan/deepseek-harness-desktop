@@ -3,6 +3,12 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Runtime};
 use tauri_plugin_store::StoreExt;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CustomDshRuntime {
+    pub name: String,
+    pub path: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Setting {
@@ -41,6 +47,10 @@ pub struct Setting {
     /// multi-source runtime management existed.
     #[serde(default)]
     pub active_dsh_runtime_id: Option<String>,
+    /// User-pinned local runtimes. Paths may point to a package directory or
+    /// directly to its `lib/bin.js` entry.
+    #[serde(default)]
+    pub custom_dsh_runtimes: Vec<CustomDshRuntime>,
 }
 
 /// 命令行集成默认开启（开发者工具场景，安装完成即可用）
@@ -91,6 +101,7 @@ impl Default for Setting {
             cli_link_enabled: default_cli_link_enabled(),
             confirm_before_instance_removal: default_confirm_before_instance_removal(),
             active_dsh_runtime_id: None,
+            custom_dsh_runtimes: Vec::new(),
         }
     }
 }
