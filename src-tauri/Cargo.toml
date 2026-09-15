@@ -1,6 +1,6 @@
 [package]
 name = "dsh-launcher"
-version = "0.0.13"
+version = "0.0.14"
 description = "Multi-instance desktop launcher for DeepSeek Harness (dsh)"
 authors = [ "DSH Launcher contributors" ]
 edition = "2021"

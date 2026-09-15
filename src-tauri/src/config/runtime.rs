@@ -32,6 +32,10 @@ fn node_base_url(region: Region) -> &'static str {
 
 /// Node.js 运行时下载地址
 pub fn get_node_download_url() -> Result<String, String> {
+    get_node_download_url_for(detect_region())
+}
+
+fn get_node_download_url_for(region: Region) -> Result<String, String> {
     let arch = env::consts::ARCH;
     let os = env::consts::OS;
 
@@ -44,8 +48,8 @@ pub fn get_node_download_url() -> Result<String, String> {
     };
 
     Ok(format!(
-        "{}{}/{}",
-        node_base_url(detect_region()).trim_end_matches('/'),
+        "{}/{}/{}",
+        node_base_url(region).trim_end_matches('/'),
         NODE_VERSION,
         filename
     ))
@@ -443,5 +447,22 @@ mod tests {
         let dsh = get_dsh_download_url().expect("dsh url");
         assert!(dsh.starts_with("https://"));
         assert!(dsh.ends_with(".zip"));
+    }
+
+    #[test]
+    fn node_download_urls_keep_the_version_path_separator_for_every_region() {
+        for (region, expected_prefix) in [
+            (Region::Domestic, NODE_MIRROR_BASE_URL),
+            (Region::Overseas, NODE_BASE_URL),
+        ] {
+            let url = get_node_download_url_for(region).expect("node url");
+            let expected_version_path = format!("/{NODE_VERSION}/");
+
+            assert!(url.starts_with(expected_prefix));
+            assert!(
+                url.contains(&expected_version_path),
+                "node download URL must separate the base path from its version: {url}"
+            );
+        }
     }
 }
