@@ -73,6 +73,7 @@ git diff --stat
 cargo test service::download::core::tests
 cargo test config::instance::tests
 cargo test service::plugin::install::tests
+cargo test --lib service::plugin
 ```
 
 前端侧的服务商测试用 `pnpm test:provider`。它会把 `provider-import.test.mjs` 与 `provider-probe.test.mjs` 一起跑，其中**集成与委托类用例需要一份可解析的真实 DSH 运行时**：脚本自行查找全局安装，找不到时这些用例会**自我 skip**，而 skip 仍然报告"成功"——与真的通过无法区分。因此结论必须连 skip 计数一起贴出，只有 `skipped 0` 才算那些用例确实跑过。显式指定用 `DSH_TEST_ENTRY=<dsh 包>/lib/bin.js`。探测类用例把请求发到 `127.0.0.1` 的本地网关，**不出网、不消耗真实用量**；真实用量只可能发生在你手动点界面里的"测试连接"时。

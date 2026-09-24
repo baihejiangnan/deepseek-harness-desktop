@@ -114,7 +114,7 @@ export const launcher = defineStore({
       })
     },
 
-    async create(name: string, dshHome: string, profile: string, repairAssistant = false, providerIds: string[] = []) {
+    async create(name: string, dshHome: string, profile: string, repairAssistant = false, providerIds: string[] = [], runtimeId?: string) {
       this.error = ''
       try {
         const instance = await invoke<DshInstance>('create_instance', {
@@ -124,6 +124,7 @@ export const launcher = defineStore({
             dshHome,
             profile,
             version: { channel: 'preview', tag: 'latest' },
+            runtimeId,
           },
         })
         await this.load()
@@ -185,6 +186,19 @@ export const launcher = defineStore({
           return
         }
         this.error = String(error)
+      }
+    },
+
+    async reorder(fromId: string, toId: string) {
+      if (updater.updating || fromId === toId)
+        return
+      this.error = ''
+      try {
+        this.registry = await invoke<InstanceRegistry>('reorder_instances', { fromId, toId })
+      }
+      catch (error) {
+        this.error = String(error)
+        throw error
       }
     },
 

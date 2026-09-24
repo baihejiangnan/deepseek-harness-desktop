@@ -307,9 +307,7 @@ pub fn discover<R: Runtime>(app: &AppHandle<R>) -> Vec<DshRuntime> {
         if let Some(item) = custom_entries.iter().find(|item| {
             normalized_id(&entry_from_custom_path(Path::new(&item.path))) == runtime.id
         }) {
-            if runtime.source == DshRuntimeSource::External {
-                runtime.name = Some(item.name.clone());
-            }
+            runtime.name = Some(item.name.clone());
             runtime.custom = true;
         }
     }
@@ -357,9 +355,7 @@ pub fn add_custom<R: Runtime>(
         path: path.to_string(),
     });
     super::set_store_dat_setting(app, setting);
-    if runtime.source == DshRuntimeSource::External {
-        runtime.name = Some(name.to_string());
-    }
+    runtime.name = Some(name.to_string());
     runtime.custom = true;
     Ok(runtime)
 }
@@ -383,7 +379,18 @@ pub fn remove_custom<R: Runtime>(app: &AppHandle<R>, id: &str) -> Result<(), Str
 }
 
 pub fn active<R: Runtime>(app: &AppHandle<R>) -> Option<DshRuntime> {
-    discover(app).into_iter().find(|runtime| runtime.selected)
+    let runtimes = discover(app);
+    if matches!(crate::desktop::mode::current(), crate::desktop::mode::RunMode::Instance { .. }) {
+        if let Some(id) = super::instance::active().and_then(|instance| instance.runtime_id) {
+            return runtimes.into_iter().find(|runtime| runtime.id == id && runtime.status == DshRuntimeStatus::Ready);
+        }
+    }
+    runtimes.into_iter().find(|runtime| runtime.selected)
+}
+
+pub fn by_id<R: Runtime>(app: &AppHandle<R>, id: &str) -> Result<DshRuntime, String> {
+    discover(app).into_iter().find(|runtime| runtime.id == id && runtime.status == DshRuntimeStatus::Ready)
+        .ok_or_else(|| format!("DSH_RUNTIME_NOT_FOUND:{id}"))
 }
 
 pub fn select<R: Runtime>(app: &AppHandle<R>, id: &str) -> Result<DshRuntime, String> {

@@ -73,6 +73,7 @@ Run the targeted backend test from src-tauri:
 cargo test service::download::core::tests
 cargo test config::instance::tests
 cargo test service::plugin::install::tests
+cargo test --lib service::plugin
 ```
 
 On the frontend, `pnpm test:provider` runs `provider-import.test.mjs` and `provider-probe.test.mjs` together. Its integration and delegation cases need a resolvable real DSH runtime: the scripts look for a global install themselves, and when they find none those cases **self-skip while still reporting success** — indistinguishable from passing. Report the skipped count with the result; only `skipped 0` means those cases actually ran. Point at a runtime explicitly with `DSH_TEST_ENTRY=<dsh package>/lib/bin.js`. Probe cases send their requests to a `127.0.0.1` gateway, so they **never leave the machine and consume no real API usage**; usage is only possible when you press "Test connection" in the interface yourself.

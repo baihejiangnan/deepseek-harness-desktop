@@ -11,6 +11,7 @@ import { store } from '@/store'
 import { formatDshVersionLabel } from '@/utils/dsh-version'
 import { providerErrorMessage } from '@/utils/provider-error'
 import { PageHeader } from './launcher-ui'
+import ProviderSelect from './provider-select'
 
 export function SharingNotice(props: { level: string | null }) {
   const { t } = useTranslation()
@@ -26,6 +27,14 @@ export function SharingNotice(props: { level: string | null }) {
       <span className="ml-2 opacity-75">{t(`launcher.sharing.${props.level}.description`)}</span>
     </div>
   )
+}
+
+function runtimeLabel(runtime: { name: string | null, version: string | null }, unavailable: string) {
+  const version = runtime.version ?? unavailable
+  const name = runtime.name?.trim()
+  if (!name || name === version || name === `DSH ${version}`)
+    return version
+  return `${version} · ${name}`
 }
 
 export default function InstanceWizard(props: { onCancel?: () => void }) {
@@ -44,6 +53,11 @@ export default function InstanceWizard(props: { onCancel?: () => void }) {
   const [nameFocused, setNameFocused] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [dshVersion, setDshVersion] = useState<string | null>(null)
+  const [runtimes, setRuntimes] = useState<Array<{ id: string, name: string | null, version: string | null, status: string, selected: boolean }>>([])
+  const [runtimeId, setRuntimeId] = useState('')
+  const runtimeOptions = runtimes
+    .filter(item => item.status === 'ready')
+    .map(item => ({ value: item.id, label: runtimeLabel(item, t('launcher.version_unavailable')) }))
   const duplicateName = name.trim().length > 0 && registry.instances.some(instance => instance.name.trim().toLocaleLowerCase() === name.trim().toLocaleLowerCase())
 
   useEffect(() => {
@@ -54,6 +68,10 @@ export default function InstanceWizard(props: { onCancel?: () => void }) {
     void invoke<{ dsh_version: string | null }>('get_runtime_info')
       .then(runtime => setDshVersion(runtime.dsh_version))
       .catch(() => {})
+    void invoke<typeof runtimes>('list_dsh_runtimes').then((items) => {
+      setRuntimes(items)
+      setRuntimeId(items.find(item => item.selected && item.status === 'ready')?.id ?? items.find(item => item.status === 'ready')?.id ?? '')
+    }).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -94,7 +112,7 @@ export default function InstanceWizard(props: { onCancel?: () => void }) {
       return
     setSubmitting(true)
     try {
-      await store.launcher.create(name, dshHome, profile, repairAssistant, providerIds)
+      await store.launcher.create(name, dshHome, profile, repairAssistant, providerIds, runtimeId)
       props.onCancel?.()
     }
     catch {
@@ -141,8 +159,10 @@ export default function InstanceWizard(props: { onCancel?: () => void }) {
                 </label>
                 <div className="block min-w-0">
                   <span className="mb-2 block text-xs font-medium">{t('launcher.version')}</span>
-                  <div className="flex min-h-10 items-center rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-sidebar)] px-3 py-2 text-sm text-[var(--launcher-ink)]">
-                    {formatDshVersionLabel(t('launcher.latest_preview'), t('launcher.version_unavailable'), dshVersion)}
+                  <div className="w-full max-w-72">
+                    {runtimeOptions.length > 0
+                      ? <ProviderSelect label={t('launcher.version')} value={runtimeId} options={runtimeOptions} onChange={setRuntimeId} disabled={submitting} compact />
+                      : <div className="flex h-10 items-center rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-sidebar)] px-3 text-sm text-[var(--launcher-muted)]">{formatDshVersionLabel(t('launcher.latest_preview'), t('launcher.version_unavailable'), dshVersion)}</div>}
                   </div>
                   <span className="mt-1.5 block text-xs text-[var(--launcher-muted)]">{t('launcher.version_hint')}</span>
                 </div>

@@ -10,6 +10,7 @@ export interface DshInstance {
   dshHome: string
   profile: string
   version: DshVersionRef
+  runtimeId?: string | null
   favorite: boolean
   createdAt: number
 }

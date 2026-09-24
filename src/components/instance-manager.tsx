@@ -1,5 +1,5 @@
 import type { DshInstance } from '../store/modules/launcher/types'
-import { ChevronLeft, ChevronRight, Power, Rocket, TrashBin, Wrench } from '@gravity-ui/icons'
+import { ChevronLeft, ChevronRight, Grip, Power, Rocket, TrashBin, Wrench } from '@gravity-ui/icons'
 import { Button, Modal, Spinner, useOverlayState } from '@heroui/react'
 import { invoke } from '@tauri-apps/api/core'
 import { useEffect, useState } from 'react'
@@ -8,6 +8,7 @@ import { If } from 'react-if-lite'
 import { useStore } from 'valtio-define'
 import { store } from '@/store'
 import { updater } from '@/store/modules/updater'
+import { toast } from '@/utils'
 import { formatDshVersionLabel } from '@/utils/dsh-version'
 import { errorBannerDetail, errorHasCode, errorText } from '@/utils/error-codes'
 import { runViewTransition } from '@/utils/view-transition'
@@ -17,9 +18,10 @@ import { ErrorBanner, PageHeader, StatusBadge } from './launcher-ui'
 
 interface InstanceManagerProps {
   onGoDownloads?: () => void
+  pluginUpdateInstanceId?: string | null
 }
 
-export default function InstanceManager({ onGoDownloads }: InstanceManagerProps) {
+export default function InstanceManager({ onGoDownloads, pluginUpdateInstanceId = null }: InstanceManagerProps) {
   const { t } = useTranslation()
   const { registry, error, sharing, runningInstanceIds, runningInstancePorts, busyInstanceId, busyInstanceAction, launchFailure, installProgress } = useStore(store.launcher)
   const { updating: dshUpdating } = useStore(updater)
@@ -36,12 +38,17 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
   const [repairCopyStatus, setRepairCopyStatus] = useState('')
   const [failureHandledPlugins, setFailureHandledPlugins] = useState<string[]>([])
   const [failureRemovedPlugins, setFailureRemovedPlugins] = useState<string[]>([])
+  const [draggedInstanceId, setDraggedInstanceId] = useState<string | null>(null)
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null)
+  const [reordering, setReordering] = useState(false)
   const active = registry.instances.find(item => item.id === registry.activeInstanceId) ?? null
   const activePort = active ? runningInstancePorts[active.id] : undefined
   const activeIsRunning = active != null && runningInstanceIds.includes(active.id)
   // 宿主进程已启动但 Harness 尚未监听端口时，保持明确的启动中反馈。
   const activeIsStarting = activeIsRunning && activePort == null
   const activeIsBusy = active != null && busyInstanceId === active.id
+  const pluginUpdateTarget = registry.instances.find(item => item.id === pluginUpdateInstanceId) ?? null
+  const activeHomeUpdating = active != null && pluginUpdateTarget != null && active.dshHome === pluginUpdateTarget.dshHome
   // 运行清单会在启动流程结束前更新，必须使用显式动作，不能从瞬时运行状态反推。
   const activeIsStopping = activeIsBusy && busyInstanceAction === 'stopping'
   const activeIsBooting = !activeIsStopping && (activeIsStarting || (activeIsBusy && busyInstanceAction === 'launching'))
@@ -239,6 +246,30 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
     }
   }
 
+  async function moveInstance(fromId: string, toId: string) {
+    if (fromId === toId || reordering)
+      return
+    setReordering(true)
+    try {
+      await store.launcher.reorder(fromId, toId)
+    }
+    catch {
+      toast(t('launcher.reorder_failed'), { variant: 'danger', placement: 'bottom end' })
+    }
+    finally {
+      setReordering(false)
+      setDraggedInstanceId(null)
+      setDropTargetId(null)
+    }
+  }
+
+  function moveInstanceWithKeyboard(group: { instances: DshInstance[] }, id: string, direction: -1 | 1) {
+    const index = group.instances.findIndex(instance => instance.id === id)
+    const target = group.instances[index + direction]
+    if (target)
+      void moveInstance(id, target.id)
+  }
+
   const versionLabel = formatDshVersionLabel(t('launcher.latest_preview'), t('launcher.version_unavailable'), dshVersion)
 
   if (creating)
@@ -253,26 +284,71 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
             <section key={group.id} className="mb-3 last:mb-0">
               <div className="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-[var(--launcher-muted)]">{t(`launcher.instance_group.${group.id}`)}</div>
               {group.instances.map(instance => (
-                <button
+                <div
                   key={instance.id}
-                  className={`mb-1 flex w-full items-center gap-3 rounded-md px-3 py-3 text-left transition-[background-color,color,transform,box-shadow] duration-200 ease-out motion-reduce:transition-none ${instance.id === active?.id ? 'translate-x-1 bg-[var(--launcher-selected)] text-[var(--launcher-ink)] shadow-[0_2px_8px_color-mix(in_srgb,var(--launcher-brand)_10%,transparent)] motion-reduce:translate-x-0' : 'text-[var(--launcher-muted)] hover:translate-x-0.5 hover:bg-white motion-reduce:hover:translate-x-0'}`}
-                  type="button"
-                  disabled={dshUpdating}
-                  style={{ viewTransitionName: `launcher-${instance.id}` }}
-                  onClick={() => selectInstance(instance.id)}
+                  draggable={!dshUpdating && !reordering && group.instances.length > 1}
+                  className={`mb-1 flex min-w-0 items-center rounded-md transition-[background-color,box-shadow,opacity] duration-150 motion-reduce:transition-none ${dropTargetId === instance.id ? 'bg-[var(--launcher-selected)] ring-2 ring-inset ring-[var(--launcher-brand)]' : ''} ${draggedInstanceId === instance.id ? 'opacity-50' : ''}`}
+                  onDragStart={(event) => {
+                    event.dataTransfer.effectAllowed = 'move'
+                    event.dataTransfer.setData('text/plain', instance.id)
+                    setDraggedInstanceId(instance.id)
+                  }}
+                  onDragEnd={() => {
+                    setDraggedInstanceId(null)
+                    setDropTargetId(null)
+                  }}
+                  onDragOver={(event) => {
+                    if (draggedInstanceId && draggedInstanceId !== instance.id && group.instances.some(item => item.id === draggedInstanceId) && !reordering) {
+                      event.preventDefault()
+                      event.dataTransfer.dropEffect = 'move'
+                      setDropTargetId(instance.id)
+                    }
+                  }}
+                  onDragLeave={(event) => {
+                    if (!event.currentTarget.contains(event.relatedTarget as Node))
+                      setDropTargetId(null)
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault()
+                    if (draggedInstanceId && group.instances.some(item => item.id === draggedInstanceId))
+                      void moveInstance(draggedInstanceId, instance.id)
+                  }}
                 >
-                  <span className="grid size-9 flex-none place-items-center rounded-md bg-[var(--launcher-brand)] font-semibold text-[var(--launcher-on-brand)]">{instance.name.slice(0, 1).toUpperCase()}</span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium">{instance.name}</span>
-                    <span className="block truncate text-xs opacity-70">{instance.profile}</span>
-                  </span>
-                  <If cond={runningInstanceIds.includes(instance.id)}>
-                    <span className="flex flex-none items-center gap-1.5 text-xs text-[var(--launcher-brand-strong)]">
-                      <span className="size-2 rounded-full bg-ok" aria-hidden="true" />
-                      {t('launcher.instance_status.running')}
+                  <button
+                    type="button"
+                    disabled={dshUpdating || reordering || group.instances.length < 2}
+                    aria-label={t('launcher.reorder_instance', { name: instance.name })}
+                    title={t('launcher.reorder_hint')}
+                    className="grid h-12 w-5 flex-none cursor-grab place-items-center text-[var(--launcher-muted)] hover:text-[var(--launcher-brand-strong)] active:cursor-grabbing disabled:cursor-default disabled:opacity-30"
+                    onKeyDown={(event) => {
+                      if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+                        event.preventDefault()
+                        moveInstanceWithKeyboard(group, instance.id, event.key === 'ArrowUp' ? -1 : 1)
+                      }
+                    }}
+                  >
+                    <Grip className="size-3.5" />
+                  </button>
+                  <button
+                    className={`flex min-w-0 flex-1 items-center gap-2 rounded-md px-1 py-3 text-left transition-[background-color,color,transform,box-shadow] duration-200 ease-out motion-reduce:transition-none ${instance.id === active?.id ? 'translate-x-1 bg-[var(--launcher-selected)] text-[var(--launcher-ink)] shadow-[0_2px_8px_color-mix(in_srgb,var(--launcher-brand)_10%,transparent)] motion-reduce:translate-x-0' : 'text-[var(--launcher-muted)] hover:translate-x-0.5 hover:bg-white motion-reduce:hover:translate-x-0'}`}
+                    type="button"
+                    disabled={dshUpdating}
+                    style={{ viewTransitionName: `launcher-${instance.id}` }}
+                    onClick={() => selectInstance(instance.id)}
+                  >
+                    <span className="grid size-9 flex-none place-items-center rounded-md bg-[var(--launcher-brand)] font-semibold text-[var(--launcher-on-brand)]">{instance.name.slice(0, 1).toUpperCase()}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-medium">{instance.name}</span>
+                      <span className="block truncate text-xs opacity-70">{instance.profile}</span>
                     </span>
-                  </If>
-                </button>
+                    <If cond={runningInstanceIds.includes(instance.id)}>
+                      <span className="flex flex-none items-center gap-1.5 text-xs text-[var(--launcher-brand-strong)]">
+                        <span className="size-2 rounded-full bg-ok" aria-hidden="true" />
+                        {t('launcher.instance_status.running')}
+                      </span>
+                    </If>
+                  </button>
+                </div>
               ))}
             </section>
           ))}
@@ -334,10 +410,12 @@ export default function InstanceManager({ onGoDownloads }: InstanceManagerProps)
                                 </Button>
                               )
                             : (
-                                <Button className="h-10 rounded-md bg-[var(--launcher-brand)] px-6 text-[var(--launcher-on-brand)]" isDisabled={busyInstanceId != null || dshUpdating} onPress={() => { void store.launcher.launch() }}>
-                                  <Rocket />
-                                  {t('launcher.launch_instance')}
-                                </Button>
+                                <span title={activeHomeUpdating ? t('download.update_blocks_launch') : undefined}>
+                                  <Button className="h-10 rounded-md bg-[var(--launcher-brand)] px-6 text-[var(--launcher-on-brand)]" isDisabled={busyInstanceId != null || dshUpdating || activeHomeUpdating} onPress={() => { void store.launcher.launch() }}>
+                                    <Rocket />
+                                    {t('launcher.launch_instance')}
+                                  </Button>
+                                </span>
                               )}
                       </>
                     )}

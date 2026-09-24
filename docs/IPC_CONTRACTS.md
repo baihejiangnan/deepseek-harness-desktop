@@ -23,7 +23,8 @@ await invoke('collab_poll_task', { instanceId, sessionId })
 | 命令 | 前端参数 | 成功结果 / 语义 |
 | --- | --- | --- |
 | `list_instances` | 无 | InstanceRegistry，包含 instances、activeInstanceId |
-| `create_instance` | `{ input }` | 新 DshInstance；input 见 config/instance.rs |
+| `create_instance` | `{ input }` | 新 DshInstance；input 可含 `runtimeId`，必须对应可用版本；旧实例缺省时沿用默认运行时 |
+| `reorder_instances` | `{ fromId, toId }` | 新注册表；只调整同一自动分组内的展示顺序，分组仍由 Home/Profile 实时计算 |
 | `update_instance` | `{ input }` | 更新后的实例；input.id 绑定目标 |
 | `select_instance` | `{ id }` | 选择后的实例；不是后续写操作的授权标识 |
 | `launch_instance_window` | `{ id, minimized?, port? }` | 宿主 PID；调用包含运行时准备和启动等待 |
@@ -38,6 +39,8 @@ await invoke('collab_poll_task', { instanceId, sessionId })
 | `export_instance_home` | `{ instanceId }` | 导出结果字符串；目标选择在后端导出流程内处理 |
 | `export_instance_profile` | `{ input }` | 导出结果字符串；结构见 service/export.rs |
 | `list_dsh_runtimes` | 无 | 运行时候选数组 |
+| `install_dsh_version` | `{ version, path }` | 在用户选择的空目录中通过本机 npm 安装准确版本，核验包名、版本和入口后登记为运行时；失败不删除用户目录 |
+| `list_npm_dsh_versions` | 无 | 通过本机 npm 查询已发布的 DSH 版本号；查询失败时界面仍可手动输入准确版本 |
 | `select_dsh_runtime` | `{ runtimeId }` | 选中的运行时；不是实例 ID |
 | `runtime_ready` | 无 | 当前候选运行时入口和 Node 文件可用性判断，不代表实例健康 |
 | `install_dependencies` | 无 | boolean 表示 DSH 是否真正更新；false 不等于安装失败。并发调用经安装互斥锁串行，不再因状态残留被误跳过 |
@@ -45,6 +48,8 @@ await invoke('collab_poll_task', { instanceId, sessionId })
 | `get_dsh_plugins_for_instance` | `{ instanceId }` | 目标 Profile 插件数组 |
 | `install_plugin_packages_for_instance` | `{ instanceId, input }` | void；解析手动规格并逐条安装。与目录/插件包安装共用同一 spec 策略：`file:`、`link:`、反斜杠路径、控制字符、以 `-` 开头一律拒绝 |
 | `install_plugin_pack_for_instance` | `{ instanceId, packId }` | packId、requested、installed、skipped |
+| `check_plugin_updates_for_instance` | `{ instanceId }` | 读取指定 Profile 的直接依赖并检查可验证的 npm 更新；固定版本、Git、压缩包和未知来源返回明确状态，不执行写入 |
+| `update_plugin_for_instance` | `{ instanceId, intent }` | 停机与运行时锁保护下重新核对来源、当前版本和目标版本，调用所选 DSH 原生 CLI 更新；保留启停状态，失败时恢复清单并核验旧版本 |
 | `set_plugin_enabled_for_instance` | `{ instanceId, pluginId, enabled }` | void |
 | `remove_plugin_for_instance` | `{ instanceId, pluginId }` | void |
 | `cancel_plugin_install` | 无 | void；当前为全局安装取消，不支持按实例/请求取消。Windows 与非 Windows 都会终止安装子进程树，逐条安装循环在每条之前检查取消标志 |

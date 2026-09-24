@@ -23,6 +23,23 @@ interface InstalledPlugin {
   bundled: boolean
 }
 
+interface PluginUpdateInfo {
+  pluginId: string
+  currentVersion: string
+  latestVersion?: string | null
+  sourceFingerprint: string
+  sourceKind: string
+  status: 'available' | 'current' | 'newer-local' | 'fixed' | 'unsupported' | 'check-failed' | 'unknown-version'
+  reason?: string | null
+}
+
+interface PluginUpdateResult {
+  pluginId: string
+  previousVersion: string
+  installedVersion: string
+  restored: boolean
+}
+
 function getInstalledPluginCategory(plugin: InstalledPlugin, catalog: PluginCatalog | null): string {
   const names = [plugin.id, plugin.name].map(value => value.toLocaleLowerCase())
   const entry = catalog?.plugins.find((item) => {
@@ -43,6 +60,10 @@ interface PluginPackSectionProps {
   installing: boolean
   installingId: string
   cancelling: boolean
+  updateChecks: Record<string, PluginUpdateInfo>
+  checkingUpdates: boolean
+  onCheckUpdates: () => Promise<void>
+  onUpdate: (plugin: InstalledPlugin) => Promise<void>
   onSelect: (packId: string) => Promise<void>
   onInstall: (packId: string) => Promise<PluginPackInstallResult>
   onCancel: () => Promise<void>
@@ -141,11 +162,17 @@ function PluginPackSection(props: PluginPackSectionProps) {
             <div className="text-right text-xs text-[var(--launcher-muted)]">
               <div>{t('download.pack_plugin_count', { count: props.detail.plugins.length })}</div>
               <div className="mt-1">{t('download.pack_installed_count', { installed: installedCount, total: props.detail.plugins.length })}</div>
+              <Button size="sm" variant="ghost" className="mt-2 h-7 rounded-md px-2 text-xs" isDisabled={props.checkingUpdates || props.installing} onPress={() => { void props.onCheckUpdates() }}>
+                <ArrowRotateRight className={`size-3 ${props.checkingUpdates ? 'animate-spin' : ''}`} />
+                {props.checkingUpdates ? t('download.checking_updates') : t('download.pack_check_updates')}
+              </Button>
             </div>
           </div>
           <div className="mt-4 max-h-64 overflow-auto rounded-md border border-[var(--launcher-border)] bg-white">
             {props.detail.plugins.map((plugin) => {
-              const installed = installedNames.has(plugin.id.toLocaleLowerCase()) || installedNames.has(plugin.name.toLocaleLowerCase())
+              const installedPlugin = props.installed.find(item => item.id.toLocaleLowerCase() === plugin.id.toLocaleLowerCase() || item.name.toLocaleLowerCase() === plugin.name.toLocaleLowerCase())
+              const installed = installedPlugin != null
+              const update = installedPlugin ? props.updateChecks[installedPlugin.id] : undefined
               return (
                 <div key={plugin.id} className="flex items-start gap-3 border-b border-[var(--launcher-border)] px-3 py-2 last:border-b-0">
                   <span className={`mt-0.5 size-2 flex-none rounded-full ${installed ? 'bg-[var(--launcher-brand)]' : 'bg-[var(--launcher-muted)]/40'}`} />
@@ -158,6 +185,11 @@ function PluginPackSection(props: PluginPackSectionProps) {
                     <div className="mt-1 truncate font-mono text-xs text-[var(--launcher-muted)]">{plugin.spec}</div>
                     {plugin.requires.length > 0 && <div className="mt-1 text-xs text-[var(--launcher-muted)]">{t('download.pack_requires', { requires: plugin.requires.join(', ') })}</div>}
                   </div>
+                  {installedPlugin && update?.status === 'available' && (
+                    <Button size="sm" variant="outline" className="h-7 flex-none rounded-md px-2 text-xs" isDisabled={props.installing} onPress={() => { void props.onUpdate(installedPlugin) }}>
+                      {t('download.update_plugin')}
+                    </Button>
+                  )}
                 </div>
               )
             })}
@@ -253,6 +285,7 @@ interface PluginPackInstallResult {
 
 interface InstallLog { line: string }
 export interface PackInstallProgress { completed: number, total: number, plugin: string }
+export interface PluginUpdateProgress { instanceId: string, completed: number, total: number, plugin: string }
 
 /** 手动多规格安装的逐条进度，对应后端 `plugin-install-progress`。 */
 interface ManualInstallProgress { completed: number, total: number, spec: string }
@@ -262,6 +295,7 @@ type InstallAttempt = { kind: 'catalog', plugin: CatalogPlugin } | { kind: 'manu
 
 interface DownloadCenterProps {
   onPackProgress?: (progress: PackInstallProgress | null) => void
+  onPluginUpdateProgress?: (progress: PluginUpdateProgress | null) => void
 }
 
 type ResourceView = 'plugins' | 'packs' | 'manage'
@@ -293,7 +327,7 @@ function getCatalog(source: CatalogSource, force: boolean): Promise<PluginCatalo
   return request
 }
 
-export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) {
+export default function DownloadCenter({ onPackProgress, onPluginUpdateProgress }: DownloadCenterProps) {
   const { t, i18n } = useTranslation()
   const { registry, runningInstanceIds } = useStore(store.launcher)
   const { serviceRunning } = useStore(store.harness)
@@ -314,7 +348,10 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
   const [installedCategory, setInstalledCategory] = useState('all')
   const [installedPage, setInstalledPage] = useState(1)
   const [pluginActionBusy, setPluginActionBusy] = useState('')
+  const [updateChecks, setUpdateChecks] = useState<Record<string, PluginUpdateInfo>>({})
+  const [checkingUpdates, setCheckingUpdates] = useState(false)
   const [pendingPluginRemove, setPendingPluginRemove] = useState<InstalledPlugin | null>(null)
+  const [pendingPluginUpdates, setPendingPluginUpdates] = useState<InstalledPlugin[]>([])
   const [installing, setInstalling] = useState(false)
   const [cancellingInstall, setCancellingInstall] = useState(false)
   const installCancelledRef = useRef(false)
@@ -338,6 +375,7 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
   const categoryMenuRef = useRef<HTMLDivElement>(null)
   const resourceViewRef = useRef<ResourceView>(resourceView)
   const packRequestIdRef = useRef(0)
+  const updateCheckRequestIdRef = useRef(0)
   const fallbackTargetId = registry.activeInstanceId ?? registry.instances[0]?.id ?? null
   const resolvedTargetId = targetId && registry.instances.some(instance => instance.id === targetId) ? targetId : fallbackTargetId
   const target = registry.instances.find(instance => instance.id === resolvedTargetId) ?? null
@@ -351,6 +389,13 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
     onOpenChange: (open) => {
       if (!open && !pluginActionBusy)
         setPendingPluginRemove(null)
+    },
+  })
+  const pluginUpdateState = useOverlayState({
+    isOpen: pendingPluginUpdates.length > 0,
+    onOpenChange: (open) => {
+      if (!open && !installing)
+        setPendingPluginUpdates([])
     },
   })
 
@@ -396,6 +441,72 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
     }
     finally {
       setLoading(false)
+    }
+  }
+
+  async function checkPluginUpdates() {
+    if (!target || checkingUpdates || installing)
+      return
+    const targetAtStart = target.id
+    const requestId = ++updateCheckRequestIdRef.current
+    setCheckingUpdates(true)
+    setError('')
+    try {
+      const values = await invoke<PluginUpdateInfo[]>('check_plugin_updates_for_instance', { instanceId: targetAtStart })
+      if (requestId === updateCheckRequestIdRef.current)
+        setUpdateChecks(Object.fromEntries(values.map(value => [value.pluginId, value])))
+    }
+    catch (err) {
+      setError(String(err))
+    }
+    finally {
+      setCheckingUpdates(false)
+    }
+  }
+
+  async function requestPluginUpdate(plugin: InstalledPlugin) {
+    setPendingPluginUpdates([plugin])
+  }
+
+  async function updatePendingPlugins() {
+    if (!target || pendingPluginUpdates.length === 0 || targetHomeRunning || installing || pluginActionBusy)
+      return
+    const updates = [...pendingPluginUpdates]
+    const targetAtStart = target
+    setPendingPluginUpdates([])
+    setInstalling(true)
+    setError('')
+    resetInstallLog()
+    onPluginUpdateProgress?.({ instanceId: targetAtStart.id, completed: 0, total: updates.length, plugin: updates[0]?.name ?? '' })
+    let unlisten: UnlistenFn | undefined
+    try {
+      unlisten = await listenInstallLog()
+      let completed = 0
+      for (const plugin of updates) {
+        onPluginUpdateProgress?.({ instanceId: targetAtStart.id, completed, total: updates.length, plugin: plugin.name })
+        const check = updateChecks[plugin.id]
+        if (!check?.latestVersion || check.status !== 'available')
+          continue
+        setPluginActionBusy(plugin.id)
+        const result = await invoke<PluginUpdateResult>('update_plugin_for_instance', {
+          instanceId: targetAtStart.id,
+          intent: { pluginId: plugin.id, expectedVersion: check.currentVersion, expectedSourceFingerprint: check.sourceFingerprint, targetVersion: check.latestVersion },
+        })
+        setUpdateChecks(previous => ({ ...previous, [plugin.id]: { ...check, currentVersion: result.installedVersion, status: 'current' } }))
+        completed += 1
+        onPluginUpdateProgress?.({ instanceId: targetAtStart.id, completed, total: updates.length, plugin: plugin.name })
+      }
+      toast(t('download.update_batch_complete', { count: updates.length }), { variant: 'accent', placement: 'bottom end' })
+      await loadInstalled()
+    }
+    catch (err) {
+      setError(String(err))
+    }
+    finally {
+      unlisten?.()
+      onPluginUpdateProgress?.(null)
+      setInstalling(false)
+      setPluginActionBusy('')
     }
   }
 
@@ -506,6 +617,8 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
   }, [resourceView, packCatalog, packCatalogAttempted, packCatalogLoading])
 
   useEffect(() => {
+    updateCheckRequestIdRef.current += 1
+    setUpdateChecks({})
     void loadInstalled()
     // 目标实例变化时切换 Profile 数据，函数本身不作为依赖。
     // eslint-disable-next-line react/exhaustive-deps
@@ -1027,6 +1140,10 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
                     installing={installing}
                     installingId={packInstallingId}
                     cancelling={cancellingInstall}
+                    updateChecks={updateChecks}
+                    checkingUpdates={checkingUpdates}
+                    onCheckUpdates={checkPluginUpdates}
+                    onUpdate={requestPluginUpdate}
                     onSelect={selectPack}
                     onInstall={installPack}
                     onCancel={cancelInstall}
@@ -1044,6 +1161,15 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="text-xs text-[var(--launcher-muted)]">{plugins.length}</span>
+                  <Button size="sm" variant="outline" className="h-9 rounded-md px-3 text-xs" isDisabled={!target || checkingUpdates || installing} onPress={() => { void checkPluginUpdates() }}>
+                    <ArrowRotateRight className={`size-3.5 ${checkingUpdates ? 'animate-spin' : ''}`} />
+                    {checkingUpdates ? t('download.checking_updates') : t('download.check_updates')}
+                  </Button>
+                  {Object.values(updateChecks).some(item => item.status === 'available') && (
+                    <Button size="sm" className="h-9 rounded-md bg-[var(--launcher-brand)] px-3 text-xs text-[var(--launcher-on-brand)]" isDisabled={targetHomeRunning || installing || pluginActionBusy !== ''} onPress={() => setPendingPluginUpdates(plugins.filter(plugin => updateChecks[plugin.id]?.status === 'available'))}>
+                      {t('download.update_all', { count: Object.values(updateChecks).filter(item => item.status === 'available').length })}
+                    </Button>
+                  )}
                   <Select
                     selectedKey={installedCategory}
                     onSelectionChange={(key) => {
@@ -1073,6 +1199,7 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
                   const pluginCategory = getInstalledPluginCategory(plugin, catalog)
                   const categoryLabel = pluginCategory === 'other' ? t('download.other_category') : catalog?.categories[pluginCategory]?.[language] ?? pluginCategory
                   const busy = pluginActionBusy === plugin.id
+                  const update = updateChecks[plugin.id]
                   return (
                     <article key={plugin.id} className="flex min-h-[190px] flex-col rounded-md border border-[var(--launcher-border)] bg-white p-3.5">
                       <div className="flex items-start justify-between gap-3">
@@ -1083,6 +1210,22 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
                         <Chip size="sm" variant="soft" color="accent">{categoryLabel}</Chip>
                       </div>
                       <p className="mt-3 line-clamp-3 text-xs leading-5 text-[var(--launcher-muted)]">{plugin.description || t('download.installed_no_description')}</p>
+                      {update && (
+                        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--launcher-muted)]" title={update.reason ?? undefined}>
+                          <span className="rounded bg-[var(--launcher-selected)] px-1.5 py-0.5">{t(`download.update_source.${update.sourceKind}`)}</span>
+                          {update.status === 'available'
+                            ? <span className="font-medium text-[var(--launcher-brand-strong)]">{t('download.update_available', { current: update.currentVersion || '-', latest: update.latestVersion })}</span>
+                            : update.status === 'current'
+                              ? t('download.update_current')
+                              : update.status === 'fixed'
+                                ? t('download.update_fixed')
+                                : update.status === 'newer-local'
+                                  ? t('download.update_newer_local')
+                                  : update.status === 'check-failed'
+                                    ? t('download.update_check_failed')
+                                    : t('download.update_unavailable')}
+                        </div>
+                      )}
                       <div className="mt-auto flex items-center justify-between gap-2 pt-3">
                         <div className="flex min-w-0 items-center gap-2">
                           <span className={`rounded-full px-2 py-1 text-xs font-medium ${plugin.bundled ? 'bg-[var(--launcher-selected)] text-[var(--launcher-brand-strong)]' : 'bg-[#f2f4f7] text-[#748095]'}`}>
@@ -1091,6 +1234,12 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
                           <code className="truncate text-xs text-[var(--launcher-muted)]">{plugin.version || '-'}</code>
                         </div>
                         <div className="flex items-center gap-1">
+                          {update?.status === 'available' && (
+                            <Button size="sm" variant="outline" className="h-7 rounded-md border-[var(--launcher-brand)] px-2 text-xs text-[var(--launcher-brand-strong)]" isDisabled={busy || pluginActionBusy !== '' || targetHomeRunning || installing} onPress={() => { void requestPluginUpdate(plugin) }}>
+                              <ArrowDownToLine className="size-3" />
+                              {t('download.update_plugin')}
+                            </Button>
+                          )}
                           {plugin.repoUrl && <Button isIconOnly size="sm" variant="ghost" className="size-7 min-w-7 rounded-md" aria-label={t('download.open_repo')} onPress={() => { void openRepo(plugin.repoUrl) }}><ArrowUpRightFromSquare className="size-3.5" /></Button>}
                           <Button size="sm" variant="outline" className="h-7 rounded-md border-[var(--launcher-brand)] px-2 text-xs text-[var(--launcher-brand-strong)]" isDisabled={busy || pluginActionBusy !== '' || targetHomeRunning || installing} onPress={() => { void toggleInstalledPlugin(plugin) }}>
                             <Power className="size-3" />
@@ -1125,6 +1274,42 @@ export default function DownloadCenter({ onPackProgress }: DownloadCenterProps) 
                   <Modal.Footer>
                     <Button className="rounded-md" variant="tertiary" isDisabled={pluginActionBusy !== ''} onPress={() => setPendingPluginRemove(null)}>{t('launcher.cancel')}</Button>
                     <Button className="rounded-md bg-danger text-white" isDisabled={pluginActionBusy !== ''} onPress={() => { void removeInstalledPlugin() }}>{t('launcher.plugin_remove_confirm')}</Button>
+                  </Modal.Footer>
+                </Modal.Dialog>
+              </Modal.Container>
+            </Modal.Backdrop>
+          </Modal>
+
+          <Modal state={pluginUpdateState}>
+            <Modal.Backdrop isDismissable>
+              <Modal.Container size="md">
+                <Modal.Dialog>
+                  <Modal.Header>
+                    <Modal.Heading>{t('download.update_confirm_title')}</Modal.Heading>
+                    <Modal.CloseTrigger />
+                  </Modal.Header>
+                  <Modal.Body>
+                    <p className="m-0 text-sm text-[var(--launcher-muted)]">{t('download.update_confirm_target', { instance: target?.name ?? '', profile: target?.profile ?? '' })}</p>
+                    <div className="mt-3 max-h-64 overflow-auto rounded-md border border-[var(--launcher-border)]">
+                      {pendingPluginUpdates.map((plugin) => {
+                        const update = updateChecks[plugin.id]
+                        return (
+                          <div key={plugin.id} className="flex items-center justify-between gap-3 border-b border-[var(--launcher-border)] px-3 py-2 text-xs last:border-b-0">
+                            <span className="truncate font-medium">{plugin.name}</span>
+                            <code className="flex-none text-[var(--launcher-muted)]">
+                              {update?.currentVersion || '-'}
+                              {' → '}
+                              {update?.latestVersion || '-'}
+                            </code>
+                          </div>
+                        )
+                      })}
+                    </div>
+                    <p className="m-0 mt-3 text-xs text-[var(--launcher-muted)]">{t('download.update_confirm_hint')}</p>
+                  </Modal.Body>
+                  <Modal.Footer>
+                    <Button variant="tertiary" onPress={() => setPendingPluginUpdates([])}>{t('launcher.cancel')}</Button>
+                    <Button className="bg-[var(--launcher-brand)] text-[var(--launcher-on-brand)]" isDisabled={installing || targetHomeRunning} onPress={() => { void updatePendingPlugins() }}>{installing ? t('download.installing') : t('download.update_confirm_action')}</Button>
                   </Modal.Footer>
                 </Modal.Dialog>
               </Modal.Container>

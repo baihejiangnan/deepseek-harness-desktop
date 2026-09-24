@@ -19,6 +19,7 @@ mod installed;
 pub mod pack;
 mod process;
 pub mod registry;
+pub mod update;
 pub mod watch;
 
 pub use cancel::{cancel, reset as reset_cancel, was_requested as install_was_cancelled};

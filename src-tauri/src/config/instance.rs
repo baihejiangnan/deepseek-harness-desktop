@@ -36,6 +36,8 @@ pub struct DshInstance {
     pub profile: String,
     pub version: DshVersionRef,
     #[serde(default)]
+    pub runtime_id: Option<String>,
+    #[serde(default)]
     pub favorite: bool,
     pub created_at: u64,
 }
@@ -59,6 +61,8 @@ pub struct CreateInstanceInput {
     pub profile: String,
     #[serde(default)]
     pub version: DshVersionRef,
+    #[serde(default)]
+    pub runtime_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -310,6 +314,7 @@ pub fn create(app: &AppHandle, input: CreateInstanceInput) -> Result<DshInstance
         dsh_home: home,
         profile: input.profile,
         version: input.version,
+        runtime_id: input.runtime_id,
         favorite: false,
         created_at: now as u64,
     };
@@ -363,6 +368,44 @@ pub fn select(app: &AppHandle, id: &str) -> Result<DshInstance, String> {
     write_registry(app, &registry)?;
     set_active(Some(instance.clone()));
     Ok(instance)
+}
+
+/// Change only the display order. Group membership continues to follow Home and Profile.
+pub fn reorder(app: &AppHandle, from_id: &str, to_id: &str) -> Result<InstanceRegistry, String> {
+    let mut registry = read_registry(app)?;
+    reorder_within_group(&mut registry, from_id, to_id)?;
+    write_registry(app, &registry)?;
+    Ok(registry)
+}
+
+fn reorder_within_group(
+    registry: &mut InstanceRegistry,
+    from_id: &str,
+    to_id: &str,
+) -> Result<(), String> {
+    let from = registry.instances.iter().position(|instance| instance.id == from_id)
+        .ok_or_else(|| format!("INSTANCE_NOT_FOUND:{from_id}"))?;
+    let to = registry.instances.iter().position(|instance| instance.id == to_id)
+        .ok_or_else(|| format!("INSTANCE_NOT_FOUND:{to_id}"))?;
+    if from == to {
+        return Ok(());
+    }
+    let group_of = |instance: &DshInstance| {
+        let same_home = registry.instances.iter().any(|other| {
+            other.id != instance.id && other.dsh_home == instance.dsh_home
+        });
+        let same_profile = registry.instances.iter().any(|other| {
+            other.id != instance.id && other.dsh_home == instance.dsh_home
+                && other.profile == instance.profile
+        });
+        if same_profile { "shared_profile" } else if same_home { "shared_home" } else { "isolated" }
+    };
+    if group_of(&registry.instances[from]) != group_of(&registry.instances[to]) {
+        return Err("INSTANCE_REORDER_GROUP_MISMATCH:instances must stay in their automatic group".to_string());
+    }
+    let moved = registry.instances.remove(from);
+    registry.instances.insert(to, moved);
+    Ok(())
 }
 
 pub fn remove(app: &AppHandle, id: &str) -> Result<InstanceRegistry, String> {
@@ -588,6 +631,7 @@ mod tests {
         registry.instances.push(DshInstance {
             id: "existing".into(), name: "Existing".into(), dsh_home: home.clone(),
             profile: "tauri".into(), version: DshVersionRef::default(),
+            runtime_id: None,
             favorite: false, created_at: 0, repair_assistant: false,
         });
         assert!(validate_repair_home(&registry, &home, false, None).is_ok());
@@ -651,6 +695,7 @@ mod tests {
                 dsh_home: home.to_path_buf(),
                 profile: "web".into(),
                 version: DshVersionRef::default(),
+                runtime_id: None,
                 favorite: false,
                 created_at: 0,
                 repair_assistant: false,
@@ -855,6 +900,7 @@ mod tests {
             dsh_home: h,
             profile: profile.into(),
             version: DshVersionRef::default(),
+            runtime_id: None,
             favorite: false,
             created_at: 0,
             repair_assistant: false,
@@ -888,5 +934,30 @@ mod tests {
 
         // 空路径要在这里就被拒，而不是退化成字面比较后把空 Home 当成可共享路径。
         assert!(normalize_home(Path::new("")).is_err());
+    }
+
+    #[test]
+    fn reorder_keeps_instances_inside_their_automatic_group() {
+        let make = |id: &str, home: &str, profile: &str| DshInstance {
+            id: id.into(), name: id.into(), dsh_home: PathBuf::from(home),
+            profile: profile.into(), version: DshVersionRef::default(), runtime_id: None,
+            favorite: false, created_at: 0, repair_assistant: false,
+        };
+        let mut registry = InstanceRegistry {
+            instances: vec![
+                make("solo-a", "a", "web"),
+                make("shared-a", "shared", "web"),
+                make("solo-b", "b", "web"),
+                make("shared-b", "shared", "web"),
+            ],
+            active_instance_id: Some("solo-a".into()),
+        };
+        reorder_within_group(&mut registry, "solo-b", "solo-a").unwrap();
+        assert_eq!(registry.instances.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+            vec!["solo-b", "solo-a", "shared-a", "shared-b"]);
+        assert_eq!(registry.active_instance_id.as_deref(), Some("solo-a"));
+        let before = registry.instances.iter().map(|item| item.id.clone()).collect::<Vec<_>>();
+        assert!(reorder_within_group(&mut registry, "solo-a", "shared-a").is_err());
+        assert_eq!(registry.instances.iter().map(|item| item.id.clone()).collect::<Vec<_>>(), before);
     }
 }

@@ -3,13 +3,14 @@ import { ListBox, Select } from '@heroui/react'
 import { useRef, useState } from 'react'
 
 /** Provider controls share the launcher's themed, keyboard-accessible popup. */
-export default function ProviderSelect({ label, value, options, onChange, disabled = false, placeholder }: {
+export default function ProviderSelect({ label, value, options, onChange, disabled = false, placeholder, compact = false }: {
   label: string
   value: string
   options: { value: string, label: string, disabled?: boolean }[]
   onChange: (value: string) => void
   disabled?: boolean
   placeholder?: string
+  compact?: boolean
 }) {
   const anchorRef = useRef<HTMLDivElement>(null)
   const [palette, setPalette] = useState<CSSProperties>({})
@@ -33,7 +34,7 @@ export default function ProviderSelect({ label, value, options, onChange, disabl
           <Select.Value />
           <Select.Indicator />
         </Select.Trigger>
-        <Select.Popover style={palette} className="launcher-select-popover max-h-64 overflow-y-auto rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)] text-[var(--launcher-ink)]">
+        <Select.Popover style={palette} className={`launcher-select-popover overflow-y-auto rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)] text-[var(--launcher-ink)] ${compact ? 'max-h-44' : 'max-h-64'}`}>
           <ListBox disabledKeys={options.filter(option => option.disabled).map(option => option.value)}>
             {options.map(option => <ListBox.Item className="rounded-md text-[var(--launcher-ink)] data-[hovered=true]:bg-[var(--launcher-selected)] data-[selected=true]:bg-[var(--launcher-selected)]" key={option.value} id={option.value} textValue={option.label}>{option.label}</ListBox.Item>)}
           </ListBox>

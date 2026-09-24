@@ -39,7 +39,9 @@ struct ExportSlot {
 
 impl Drop for ExportSlot {
     fn drop(&mut self) {
-        let mut active = EXPORT_ACTIVE.lock().unwrap_or_else(|error| error.into_inner());
+        let mut active = EXPORT_ACTIVE
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if active.as_deref() == Some(self.instance_id.as_str()) {
             *active = None;
         }
@@ -56,9 +58,14 @@ struct ExportReporter<'a> {
 }
 
 /// 占用导出槽位。文件对话框之后调用：用户取消对话框不算一次导出。
-fn begin_export<'a>(app: &'a AppHandle, instance_id: &str) -> Result<(ExportSlot, ExportReporter<'a>), String> {
+fn begin_export<'a>(
+    app: &'a AppHandle,
+    instance_id: &str,
+) -> Result<(ExportSlot, ExportReporter<'a>), String> {
     {
-        let mut active = EXPORT_ACTIVE.lock().unwrap_or_else(|error| error.into_inner());
+        let mut active = EXPORT_ACTIVE
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if let Some(running) = active.as_deref() {
             return Err(format!("EXPORT_ALREADY_RUNNING:{running}"));
         }
@@ -66,7 +73,9 @@ fn begin_export<'a>(app: &'a AppHandle, instance_id: &str) -> Result<(ExportSlot
     }
     EXPORT_CANCEL.store(false, Ordering::SeqCst);
     Ok((
-        ExportSlot { instance_id: instance_id.to_string() },
+        ExportSlot {
+            instance_id: instance_id.to_string(),
+        },
         ExportReporter {
             app,
             instance_id: instance_id.to_string(),
@@ -80,10 +89,14 @@ fn begin_export<'a>(app: &'a AppHandle, instance_id: &str) -> Result<(ExportSlot
 
 /// 请求取消，必须命中当前正在导出的实例；没有导出在跑时明确报错而不是静默成功。
 pub fn request_cancel(instance_id: &str) -> Result<(), String> {
-    let active = EXPORT_ACTIVE.lock().unwrap_or_else(|error| error.into_inner());
+    let active = EXPORT_ACTIVE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     match active.as_deref() {
         None => Err("EXPORT_NOT_RUNNING".to_string()),
-        Some(running) if running != instance_id => Err(format!("EXPORT_INSTANCE_MISMATCH:{running}")),
+        Some(running) if running != instance_id => {
+            Err(format!("EXPORT_INSTANCE_MISMATCH:{running}"))
+        }
         Some(_) => {
             EXPORT_CANCEL.store(true, Ordering::SeqCst);
             Ok(())

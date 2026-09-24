@@ -1,4 +1,4 @@
-import type { CatalogProvider, CatalogResponse } from './provider-contracts'
+import type { CatalogModel, CatalogModelsResponse, CatalogProvider, CatalogResponse } from './provider-contracts'
 import type { ProviderModel } from './provider-models'
 import { ArrowRotateRight, PencilToSquare, Plus, TrashBin } from '@gravity-ui/icons'
 import { Button } from '@heroui/react'
@@ -39,6 +39,10 @@ export default function ProviderTemplates({ onSaved, onApply }: { onSaved?: (id:
   const [protocols, setProtocols] = useState<string[]>([])
   const [catalog, setCatalog] = useState<CatalogProvider[]>([])
   const [catalogError, setCatalogError] = useState('')
+  const [catalogModels, setCatalogModels] = useState<CatalogModel[]>([])
+  const [catalogModelsError, setCatalogModelsError] = useState('')
+  const [catalogModelsLoading, setCatalogModelsLoading] = useState(false)
+  const [catalogModelQuery, setCatalogModelQuery] = useState('')
   const [draft, setDraft] = useState<ProviderTemplate>({ ...empty })
   const [editing, setEditing] = useState(false)
   const [apiKey, setApiKey] = useState('')
@@ -56,6 +60,9 @@ export default function ProviderTemplates({ onSaved, onApply }: { onSaved?: (id:
 
   function openEditor(item?: ProviderTemplate) {
     setDraft(item ? { ...item, modelId: '', models: modelsOf(item) } : { ...empty })
+    setCatalogModels([])
+    setCatalogModelsError('')
+    setCatalogModelQuery('')
     setEditing(!!item)
     setApiKey('')
     setNotice('')
@@ -63,6 +70,25 @@ export default function ProviderTemplates({ onSaved, onApply }: { onSaved?: (id:
     setRemovingId(null)
     setRenamingId(null)
     setEditorOpen(true)
+  }
+
+  async function loadCatalogModels(providerId: string) {
+    if (!providerId)
+      return
+    setCatalogModelsLoading(true)
+    setCatalogModelsError('')
+    try {
+      const result = await invoke<CatalogModelsResponse>('get_runtime_catalog_models', { providerId })
+      if (result.providerId === providerId)
+        setCatalogModels(result.models)
+    }
+    catch (cause) {
+      setCatalogModels([])
+      setCatalogModelsError(providerErrorMessage(cause))
+    }
+    finally {
+      setCatalogModelsLoading(false)
+    }
   }
 
   async function reload() {
@@ -184,6 +210,8 @@ export default function ProviderTemplates({ onSaved, onApply }: { onSaved?: (id:
   const selectedItem = pagedItems.find(item => item.id === selectedId) ?? pagedItems[0]
   const catalogDraft = draft.kind === 'catalog'
   const directoryEntry = catalog.find(item => item.id === draft.id)
+  const selectedCatalogModelIds = new Set(draft.models.map(model => model.id))
+  const filteredCatalogModels = catalogModels.filter(model => `${model.id} ${model.name}`.toLocaleLowerCase().includes(catalogModelQuery.trim().toLocaleLowerCase()))
   return (
     <section className="space-y-4 [&_button]:rounded-md [&_button]:text-sm [&_input]:scroll-mb-24 [&_select]:scroll-mb-24">
       {!editorOpen && (
@@ -361,7 +389,12 @@ export default function ProviderTemplates({ onSaved, onApply }: { onSaved?: (id:
                   onChange={(id) => {
                     const entry = catalog.find(item => item.id === id)
                     setApiKey('')
+                    setCatalogModels([])
+                    setCatalogModelsError('')
+                    setCatalogModelQuery('')
                     setDraft(entry ? { ...empty, id: entry.id, name: entry.name, kind: 'catalog', selection: 'all' } : { ...empty })
+                    if (entry)
+                      void loadCatalogModels(entry.id)
                   }}
                 />
                 {catalogError && <p role="status" className="text-xs text-[var(--launcher-muted)]">{catalogError}</p>}
@@ -390,8 +423,63 @@ export default function ProviderTemplates({ onSaved, onApply }: { onSaved?: (id:
               {t('providers.protocol')}
               <ProviderSelect label={t('providers.protocol')} value={draft.protocol || (catalogDraft ? 'inherit' : '')} disabled={busy} placeholder={t('providers.select_protocol')} options={[...(catalogDraft ? [{ value: 'inherit', label: t('providers.catalog_defaults') }] : []), ...protocols.map(protocol => ({ value: protocol, label: protocol }))]} onChange={protocol => setDraft({ ...draft, protocol: protocol === 'inherit' ? '' : protocol })} />
             </label>
-            {catalogDraft && draft.selection !== 'subset'
-              ? <p className="col-span-full text-sm text-[var(--launcher-muted)]">{t('providers.catalog_models_auto', { count: directoryEntry?.modelCount ?? 0 })}</p>
+            {catalogDraft
+              ? (
+                  <div className="col-span-full min-w-0 space-y-3 border-t border-[var(--launcher-border)] pt-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <strong className="text-sm">{t('providers.models_selected', { count: draft.selection === 'subset' ? draft.models.length : directoryEntry?.modelCount ?? 0 })}</strong>
+                      <Button type="button" variant="outline" isDisabled={busy || catalogModelsLoading || !draft.id} onPress={() => { void loadCatalogModels(draft.id) }}>
+                        {t(catalogModelsLoading ? 'launcher.processing' : 'providers.fetch_models')}
+                      </Button>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-3 text-sm">
+                      <label className="flex items-center gap-2">
+                        <input type="radio" name="template-catalog-model-selection" className="accent-[var(--launcher-brand)]" checked={draft.selection !== 'subset'} onChange={() => setDraft({ ...draft, selection: 'all', models: [] })} />
+                        {t('providers.add.follow_catalog', { count: directoryEntry?.modelCount ?? 0 })}
+                      </label>
+                      <label className="flex items-center gap-2">
+                        <input type="radio" name="template-catalog-model-selection" className="accent-[var(--launcher-brand)]" checked={draft.selection === 'subset'} onChange={() => setDraft({ ...draft, selection: 'subset' })} />
+                        {t('providers.add.pick_subset', { count: draft.models.length })}
+                      </label>
+                    </div>
+                    {catalogModelsError && <p role="alert" className="m-0 text-sm text-danger">{catalogModelsError}</p>}
+                    {draft.selection === 'subset' && (
+                      <>
+                        <p className="m-0 text-xs text-[var(--launcher-muted)]">{t('providers.add.subset_warning')}</p>
+                        <input
+                          aria-label={t('providers.add.search_models')}
+                          type="search"
+                          placeholder={t('providers.add.search_models')}
+                          className={inputClass}
+                          value={catalogModelQuery}
+                          onChange={event => setCatalogModelQuery(event.target.value)}
+                        />
+                        <div className="max-h-52 overflow-y-auto rounded-md border border-[var(--launcher-border)] p-2">
+                          {filteredCatalogModels.map(model => (
+                            <label key={model.id} className={`flex min-w-0 cursor-pointer items-start gap-3 rounded px-3 py-2 text-sm transition-colors hover:bg-[var(--launcher-selected)] motion-reduce:transition-none ${selectedCatalogModelIds.has(model.id) ? 'bg-[var(--launcher-selected)]' : ''}`}>
+                              <input
+                                type="checkbox"
+                                className="mt-0.5 size-4 shrink-0 accent-[var(--launcher-brand)]"
+                                checked={selectedCatalogModelIds.has(model.id)}
+                                onChange={(event) => {
+                                  const models = event.target.checked
+                                    ? [...draft.models, { id: model.id, name: model.name, contextWindow: model.contextWindow, maxTokens: model.maxTokens }]
+                                    : draft.models.filter(item => item.id !== model.id)
+                                  setDraft({ ...draft, selection: 'subset', models })
+                                }}
+                              />
+                              <span className="min-w-0 break-all">
+                                {model.id}
+                                {model.name && model.name !== model.id ? ` · ${model.name}` : ''}
+                              </span>
+                            </label>
+                          ))}
+                          {!catalogModelsLoading && filteredCatalogModels.length === 0 && <p className="m-0 p-3 text-sm text-[var(--launcher-muted)]">{t(catalogModels.length ? 'providers.no_results' : 'providers.catalog_empty')}</p>}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )
               : <ProviderModels models={draft.models} onChange={models => setDraft({ ...draft, models })} baseUrl={draft.baseUrl} protocol={draft.protocol} apiKey={apiKey} savedId={editing ? draft.id : undefined} disabled={busy} onBusy={setBusy} />}
             <label className="col-span-full flex cursor-pointer items-start gap-3 border-t border-[var(--launcher-border)] pt-4 text-sm">
               <input type="checkbox" className="mt-0.5 size-4 shrink-0 accent-[var(--launcher-brand)]" checked={draft.defaultForNew} onChange={event => setDraft({ ...draft, defaultForNew: event.target.checked })} />

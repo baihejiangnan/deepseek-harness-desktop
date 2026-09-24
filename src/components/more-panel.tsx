@@ -8,6 +8,7 @@ import { useStore } from 'valtio-define'
 import { updater } from '@/store/modules/updater'
 import { toast } from '@/utils'
 import { ErrorBanner, PageHeader } from './launcher-ui'
+import ProviderSelect from './provider-select'
 
 type MoreSection = 'updates' | 'logs' | 'links' | 'acknowledgements'
 
@@ -88,11 +89,22 @@ function UpdatesSection() {
   const [addingRuntime, setAddingRuntime] = useState(false)
   const [runtimeName, setRuntimeName] = useState('')
   const [runtimePath, setRuntimePath] = useState('')
+  const [addMode, setAddMode] = useState<'folder' | 'npm'>('folder')
+  const [installVersion, setInstallVersion] = useState('')
+  const [installingVersion, setInstallingVersion] = useState(false)
+  const [installError, setInstallError] = useState('')
+  const [availableVersions, setAvailableVersions] = useState<string[]>([])
 
   useEffect(() => {
     void invoke<RuntimeInfo>('get_runtime_info').then(setRuntime).catch(() => {})
     void invoke<DshRuntime[]>('list_dsh_runtimes').then(setRuntimes).catch(() => {})
   }, [updating])
+
+  useEffect(() => {
+    if (!addingRuntime || addMode !== 'npm')
+      return
+    void invoke<string[]>('list_npm_dsh_versions').then(setAvailableVersions).catch(() => setAvailableVersions([]))
+  }, [addingRuntime, addMode])
 
   async function selectRuntime(runtimeId: string) {
     setSwitchingRuntime(true)
@@ -136,6 +148,26 @@ function UpdatesSection() {
     }
     finally {
       setSwitchingRuntime(false)
+    }
+  }
+
+  async function installVersionFromNpm() {
+    setInstallError('')
+    setInstallingVersion(true)
+    try {
+      await invoke('install_dsh_version', { version: installVersion, path: runtimePath })
+      setRuntimes(await invoke<DshRuntime[]>('list_dsh_runtimes'))
+      setInstallVersion('')
+      setRuntimePath('')
+      setAddingRuntime(false)
+      toast(t('launcher.more_updates.runtime_install_complete'), { variant: 'accent', placement: 'bottom end' })
+    }
+    catch (error) {
+      setInstallError(runtimeErrorDescription(t, error))
+      toast(t('launcher.more_updates.runtime_install_failed'), { description: runtimeErrorDescription(t, error), variant: 'danger', placement: 'bottom end' })
+    }
+    finally {
+      setInstallingVersion(false)
     }
   }
 
@@ -191,7 +223,7 @@ function UpdatesSection() {
             </div>
             <Button
               className="h-9 flex-none rounded-md bg-[var(--launcher-brand)] text-[var(--launcher-on-brand)]"
-              isDisabled={checking || updating}
+              isDisabled={checking || updating || installingVersion}
               onPress={() => { void updater.checkManually() }}
             >
               <ArrowRotateRight className={checking ? 'animate-spin motion-reduce:animate-none' : undefined} />
@@ -242,7 +274,7 @@ function UpdatesSection() {
                     : t('launcher.more_updates.available_detail', { tag: updateInfo.tag, commit: updateInfo.commit?.slice(0, 7) })}
               </span>
               {updateInfo.installable
-                ? <Button className="h-8 rounded-md" variant="secondary" onPress={() => { void updater.handleUpdate() }}>{t('update.now')}</Button>
+                ? <Button className="h-8 rounded-md" variant="secondary" isDisabled={installingVersion} onPress={() => { void updater.handleUpdate() }}>{t('update.now')}</Button>
                 : <Button className="h-8 rounded-md" variant="secondary" onPress={openUpstreamRelease}>{t('launcher.more_updates.view_release')}</Button>}
             </div>
           )}
@@ -255,32 +287,60 @@ function UpdatesSection() {
         <section className="mt-5 rounded-md border border-[var(--launcher-border)] bg-[var(--launcher-surface)] p-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="m-0 text-sm font-semibold">{t('launcher.more_updates.runtime_title')}</h2>
-            <Button size="sm" variant="secondary" className="h-8 rounded-md" isDisabled={switchingRuntime || updating} onPress={() => setAddingRuntime(value => !value)}>
+            <Button size="sm" variant="secondary" className="h-8 rounded-md" isDisabled={switchingRuntime || updating || installingVersion} onPress={() => setAddingRuntime(value => !value)}>
               {addingRuntime ? t('launcher.more_updates.runtime_cancel') : t('launcher.more_updates.runtime_add')}
             </Button>
           </div>
           <p className="mt-1 text-xs leading-5 text-[var(--launcher-muted)]">{t('launcher.more_updates.runtime_description')}</p>
           {addingRuntime && (
             <div className="mt-4 grid gap-3 rounded-md border border-[var(--launcher-border)] bg-white/60 p-4">
+              <div className="flex gap-2" role="group" aria-label={t('launcher.more_updates.runtime_add_method')}>
+                <Button size="sm" variant={addMode === 'folder' ? 'primary' : 'secondary'} isDisabled={installingVersion} onPress={() => setAddMode('folder')}>{t('launcher.more_updates.runtime_method_folder')}</Button>
+                <Button size="sm" variant={addMode === 'npm' ? 'primary' : 'secondary'} isDisabled={installingVersion} onPress={() => setAddMode('npm')}>{t('launcher.more_updates.runtime_method_npm')}</Button>
+              </div>
+              {addMode === 'folder' && (
+                <label className="grid gap-1 text-xs text-[var(--launcher-muted)]">
+                  {t('launcher.more_updates.runtime_name')}
+                  <input className="h-9 rounded-md border border-[var(--launcher-border)] bg-white px-3 text-sm text-[var(--launcher-ink)] outline-none focus:border-[var(--launcher-brand)]" value={runtimeName} maxLength={80} onChange={event => setRuntimeName(event.target.value)} />
+                </label>
+              )}
+              {addMode === 'npm' && (
+                <div className="grid gap-1 text-xs text-[var(--launcher-muted)]">
+                  <label htmlFor="dsh-install-version">{t('launcher.more_updates.runtime_version')}</label>
+                  <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">
+                    <input id="dsh-install-version" className="h-10 w-full min-w-0 rounded-md border border-[var(--launcher-border)] bg-white px-3 text-sm text-[var(--launcher-ink)] disabled:opacity-60" disabled={installingVersion} value={installVersion} placeholder="0.1.7-rc.1" onChange={event => setInstallVersion(event.target.value)} />
+                    {availableVersions.length > 0 && (
+                      <div className="min-w-0 w-full">
+                        <ProviderSelect label={t('launcher.more_updates.runtime_choose_version')} value={availableVersions.includes(installVersion) ? installVersion : ''} placeholder={t('launcher.more_updates.runtime_choose_version')} options={availableVersions.map(version => ({ value: version, label: version }))} onChange={setInstallVersion} disabled={installingVersion} compact />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
               <label className="grid gap-1 text-xs text-[var(--launcher-muted)]">
-                {t('launcher.more_updates.runtime_name')}
-                <input className="h-9 rounded-md border border-[var(--launcher-border)] bg-white px-3 text-sm text-[var(--launcher-ink)] outline-none focus:border-[var(--launcher-brand)]" value={runtimeName} maxLength={80} onChange={event => setRuntimeName(event.target.value)} />
-              </label>
-              <label className="grid gap-1 text-xs text-[var(--launcher-muted)]">
-                {t('launcher.more_updates.runtime_path')}
+                {t(addMode === 'npm' ? 'launcher.more_updates.runtime_install_path' : 'launcher.more_updates.runtime_path')}
                 <span className="flex min-w-0 gap-2">
-                  <input className="h-9 min-w-0 flex-1 rounded-md border border-[var(--launcher-border)] bg-white px-3 text-sm text-[var(--launcher-ink)] outline-none focus:border-[var(--launcher-brand)]" value={runtimePath} onChange={event => setRuntimePath(event.target.value)} />
-                  <Button size="sm" variant="secondary" className="h-9 rounded-md" onPress={() => { void browseRuntime() }}>{t('launcher.more_updates.runtime_browse')}</Button>
+                  <input className="h-9 min-w-0 flex-1 rounded-md border border-[var(--launcher-border)] bg-white px-3 text-sm text-[var(--launcher-ink)] outline-none focus:border-[var(--launcher-brand)] disabled:opacity-60" disabled={installingVersion} value={runtimePath} onChange={event => setRuntimePath(event.target.value)} />
+                  <Button size="sm" variant="secondary" className="h-9 rounded-md" isDisabled={installingVersion} onPress={() => { void browseRuntime() }}>{t('launcher.more_updates.runtime_browse')}</Button>
                 </span>
               </label>
-              <p className="m-0 text-xs leading-5 text-[var(--launcher-muted)]">{t('launcher.more_updates.runtime_add_hint')}</p>
-              <div><Button size="sm" className="h-8 rounded-md bg-[var(--launcher-brand)] text-[var(--launcher-on-brand)]" isDisabled={runtimeName.trim() === '' || runtimePath.trim() === '' || switchingRuntime} onPress={() => { void addRuntime() }}>{t('launcher.more_updates.runtime_add_confirm')}</Button></div>
+              <p className="m-0 text-xs leading-5 text-[var(--launcher-muted)]">{t(addMode === 'npm' ? 'launcher.more_updates.runtime_install_hint' : 'launcher.more_updates.runtime_add_hint')}</p>
+              <div><Button size="sm" className="h-8 rounded-md bg-[var(--launcher-brand)] text-[var(--launcher-on-brand)]" isDisabled={runtimePath.trim() === '' || switchingRuntime || installingVersion || (addMode === 'npm' ? installVersion.trim() === '' : runtimeName.trim() === '')} onPress={() => { void (addMode === 'npm' ? installVersionFromNpm() : addRuntime()) }}>{installingVersion ? t('launcher.more_updates.runtime_installing') : t(addMode === 'npm' ? 'launcher.more_updates.runtime_install' : 'launcher.more_updates.runtime_add_confirm')}</Button></div>
+              {installingVersion && (
+                <div className="rounded-md border border-[var(--launcher-brand)]/25 bg-[var(--launcher-selected)] px-3 py-2" role="status">
+                  <p className="m-0 text-xs font-medium text-[var(--launcher-brand-strong)]">{t('launcher.more_updates.runtime_installing')}</p>
+                  <div role="progressbar" aria-label={t('launcher.more_updates.runtime_installing')} className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[var(--launcher-surface)]">
+                    <div className="h-full w-2/5 animate-pulse rounded-full bg-[var(--launcher-brand)] motion-reduce:animate-none" />
+                  </div>
+                </div>
+              )}
+              {installError !== '' && !installingVersion && <ErrorBanner message={t('launcher.more_updates.runtime_install_failed')} detail={installError} />}
             </div>
           )}
           <div className="mt-4 grid gap-2">
             {runtimes.map(item => (
               <div key={item.id} className={`flex min-w-0 items-center rounded-md border transition-colors motion-reduce:transition-none ${item.selected ? 'border-[var(--launcher-brand)] bg-[var(--launcher-selected)]' : 'border-[var(--launcher-border)] bg-white/60'}`}>
-                <button type="button" disabled={switchingRuntime || updating || item.selected || item.status !== 'ready'} onClick={() => { void selectRuntime(item.id) }} className="flex min-w-0 flex-1 items-center justify-between gap-4 px-4 py-3 text-left disabled:cursor-default">
+                <button type="button" disabled={switchingRuntime || updating || installingVersion || item.selected || item.status !== 'ready'} onClick={() => { void selectRuntime(item.id) }} className="flex min-w-0 flex-1 items-center justify-between gap-4 px-4 py-3 text-left disabled:cursor-default">
                   <span className="min-w-0">
                     <span className="flex flex-wrap items-center gap-2 text-sm font-medium">
                       {item.name ?? t(`launcher.more_updates.runtime_source_${item.source}`)}
@@ -293,7 +353,7 @@ function UpdatesSection() {
                     <span className="mt-1 block">{t(`launcher.more_updates.runtime_status_${item.status}`)}</span>
                   </span>
                 </button>
-                {item.custom && <Button size="sm" variant="ghost" className="mr-2 h-8 flex-none rounded-md" isDisabled={item.selected || switchingRuntime || updating} onPress={() => { void removeRuntime(item.id) }}>{t('launcher.more_updates.runtime_remove')}</Button>}
+                {item.custom && <Button size="sm" variant="ghost" className="mr-2 h-8 flex-none rounded-md" isDisabled={item.selected || switchingRuntime || updating || installingVersion} onPress={() => { void removeRuntime(item.id) }}>{t('launcher.more_updates.runtime_remove')}</Button>}
               </div>
             ))}
             {runtimes.length === 0 && <p className="m-0 py-4 text-center text-sm text-[var(--launcher-muted)]">{t('launcher.more_updates.runtime_empty')}</p>}

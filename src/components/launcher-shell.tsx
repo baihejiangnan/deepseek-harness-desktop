@@ -1,4 +1,4 @@
-import type { PackInstallProgress } from './download-center'
+import type { PackInstallProgress, PluginUpdateProgress } from './download-center'
 import { ArrowDownToLine, CircleInfo, Gear, Minus, Persons, Rocket, Square, Xmark } from '@gravity-ui/icons'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
@@ -42,6 +42,7 @@ export default function LauncherShell() {
   const [launchRequest, setLaunchRequest] = useState(0)
   const [moreRequest, setMoreRequest] = useState(0)
   const [packProgress, setPackProgress] = useState<PackInstallProgress | null>(null)
+  const [pluginUpdateProgress, setPluginUpdateProgress] = useState<PluginUpdateProgress | null>(null)
   const items: Array<{ id: Section, icon: typeof Rocket }> = [
     { id: 'launch', icon: Rocket },
     { id: 'resources', icon: ArrowDownToLine },
@@ -159,6 +160,15 @@ export default function LauncherShell() {
       percent: Math.max(0, Math.min(100, (packProgress.completed / packProgress.total) * 100)),
     })
   }
+  if (pluginUpdateProgress != null && pluginUpdateProgress.total > 0) {
+    tasks.push({
+      id: 'plugin-update',
+      label: t('download.update_progress', { current: pluginUpdateProgress.completed, total: pluginUpdateProgress.total, plugin: pluginUpdateProgress.plugin }),
+      section: 'resources',
+      tone: 'accent',
+      percent: Math.max(0, Math.min(100, (pluginUpdateProgress.completed / pluginUpdateProgress.total) * 100)),
+    })
+  }
   if (busyInstance != null) {
     const statusText = busyIsStopping ? t('launcher.instance_status.stopping') : t('launcher.instance_status.booting')
     tasks.push({
@@ -254,14 +264,14 @@ export default function LauncherShell() {
       <If cond={!loading} else={<div className="grid flex-1 place-items-center text-sm text-[var(--launcher-muted)]">{t('status.loading')}</div>}>
         <div className="flex min-h-0 flex-1">
           <div className={`${section === 'resources' ? 'flex' : 'hidden'} min-h-0 min-w-0 flex-1`}>
-            <DownloadCenter onPackProgress={setPackProgress} />
+            <DownloadCenter onPackProgress={setPackProgress} onPluginUpdateProgress={setPluginUpdateProgress} />
           </div>
           <div className={`${section === 'collaboration' ? 'flex' : 'hidden'} min-h-0 min-w-0 flex-1`}>
             <CollaborationPanel />
           </div>
           {section !== 'resources' && section !== 'collaboration' && (
             <div key={section} className="launcher-content-enter flex min-h-0 min-w-0 flex-1">
-              <If cond={section === 'launch'} then={registry.instances.length === 0 ? <InstanceWizard /> : <InstanceManager key={launchRequest} onGoDownloads={() => { setSection('resources') }} />} else={section === 'settings' ? <PersonalizationPanel /> : <MorePanel key={moreRequest} />} />
+              <If cond={section === 'launch'} then={registry.instances.length === 0 ? <InstanceWizard /> : <InstanceManager key={launchRequest} pluginUpdateInstanceId={pluginUpdateProgress?.instanceId ?? null} onGoDownloads={() => { setSection('resources') }} />} else={section === 'settings' ? <PersonalizationPanel /> : <MorePanel key={moreRequest} />} />
             </div>
           )}
         </div>

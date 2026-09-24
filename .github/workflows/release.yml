@@ -55,11 +55,16 @@ jobs:
             echo
             echo '## 下载说明'
             echo
-            echo '- **macOS Apple Silicon**：下载 `aarch64.dmg`'
-            echo '- **macOS Intel**：下载 `x64.dmg`'
             echo '- **Windows 安装版**：下载 `setup.exe` 或 `.msi`'
             echo '- **Windows 便携版**：下载文件名包含 `portable.exe` 的产物'
-            echo '- **Linux x64**：下载 `.AppImage` 或 `.deb`（基于 Ubuntu 22.04 构建）'
+            if [ "${{ github.ref_name }}" = "v0.0.15" ]; then
+              echo '- macOS 和 Linux 安装包将在第二阶段发布。'
+              echo '- 已知限制：当前 DSH 的服务商探测集成测试有 4 项未通过；Anthropic 模型列表读取尚未适配。'
+            else
+              echo '- **macOS Apple Silicon**：下载 `aarch64.dmg`'
+              echo '- **macOS Intel**：下载 `x64.dmg`'
+              echo '- **Linux x64**：下载 `.AppImage` 或 `.deb`（基于 Ubuntu 22.04 构建）'
+            fi
           } > release_notes.md
 
           if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
@@ -106,8 +111,11 @@ jobs:
         id: check
         shell: bash
         run: |
-          # Tag 触发全部构建；手动触发时仅构建与 platform_filter 匹配的平台
-          if [ "${{ github.event_name }}" = "push" ] || \
+          # v0.0.15 分阶段发布：首批只上传 Windows；其他平台待后续明确触发。
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref_name }}" = "v0.0.15" ] && [ "${{ matrix.id }}" != "windows" ]; then
+            echo "should_run=false" >> $GITHUB_OUTPUT
+            echo "v0.0.15 首批仅构建 Windows。"
+          elif [ "${{ github.event_name }}" = "push" ] || \
              [ "${{ github.event.inputs.platform_filter }}" = "all" ] || \
              [ "${{ github.event.inputs.platform_filter }}" = "${{ matrix.id }}" ]; then
             echo "should_run=true" >> $GITHUB_OUTPUT

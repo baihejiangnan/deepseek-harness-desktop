@@ -210,13 +210,17 @@ fn map_dshfind_catalog(value: DshFindCatalog) -> PluginCatalog {
 
 /// 根据目录条目的唯一名称解析可安装的 npm/Git 规格。
 pub fn install_spec(plugin: &CatalogPlugin) -> Result<String, String> {
-    let spec = plugin
-        .npm
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .map(str::trim)
-        .map(ToOwned::to_owned)
-        .or_else(|| parse_install_command(&plugin.install))
+    // pkg_name can be the identity of an unpublished Git package. Preserve the
+    // catalog's install command rather than turning that identity into an npm request.
+    let spec = parse_install_command(&plugin.install)
+        .or_else(|| {
+            plugin
+                .npm
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .map(str::trim)
+                .map(ToOwned::to_owned)
+        })
         .ok_or_else(|| {
             format!(
                 "PLUGIN_CATALOG_SPEC: no supported source for {}",
@@ -303,15 +307,32 @@ mod tests {
     }
 
     #[test]
-    fn prefers_npm_source() {
+    fn preserves_git_command_when_package_name_is_present() {
         assert_eq!(
             install_spec(&plugin(
-                "dsh plugin --profile web add github:owner/repo",
-                Some("example")
+                "dsh plugin --profile web add github:Kr-ATG/dsh-webui",
+                Some("@dsh-external/dsh-webui")
             ))
             .unwrap(),
+            "github:Kr-ATG/dsh-webui"
+        );
+    }
+
+    #[test]
+    fn falls_back_to_npm_when_no_supported_command_exists() {
+        assert_eq!(
+            install_spec(&plugin("", Some("example"))).unwrap(),
             "example"
         );
+    }
+
+    #[test]
+    fn invalid_command_spec_does_not_fall_back_to_package_name() {
+        assert!(install_spec(&plugin(
+            "dsh plugin --profile web add file:local",
+            Some("example")
+        ))
+        .is_err());
     }
 
     #[test]

@@ -49,18 +49,48 @@ pub fn setup(app_handle: tauri::AppHandle) {
 }
 
 fn native_tray_menu(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::menu::Menu<Wry>> {
-    let locale = if crate::config::get_store_dat_setting(app).language.starts_with("zh") {
+    let locale = if crate::config::get_store_dat_setting(app)
+        .language
+        .starts_with("zh")
+    {
         include_str!("../../../src/i18n/locales/zh-CN.json")
     } else {
         include_str!("../../../src/i18n/locales/en-US.json")
     };
     let labels: serde_json::Value = serde_json::from_str(locale).expect("bundled locale JSON");
-    let quit = tauri::menu::MenuItem::with_id(app, "native-quit", labels["tray.quit"].as_str().unwrap_or("Exit"), true, None::<&str>)?;
-    let open = tauri::menu::MenuItem::with_id(app, "native-open", labels["tray.open_launcher"].as_str().unwrap(), true, None::<&str>)?;
-    let settings = tauri::menu::MenuItem::with_id(app, "native-settings", labels["tray.settings"].as_str().unwrap(), true, None::<&str>)?;
+    let quit = tauri::menu::MenuItem::with_id(
+        app,
+        "native-quit",
+        labels["tray.quit"].as_str().unwrap_or("Exit"),
+        true,
+        None::<&str>,
+    )?;
+    let open = tauri::menu::MenuItem::with_id(
+        app,
+        "native-open",
+        labels["tray.open_launcher"].as_str().unwrap(),
+        true,
+        None::<&str>,
+    )?;
+    let settings = tauri::menu::MenuItem::with_id(
+        app,
+        "native-settings",
+        labels["tray.settings"].as_str().unwrap(),
+        true,
+        None::<&str>,
+    )?;
     let menu = tauri::menu::Menu::with_items(app, &[&open, &settings])?;
-    for instance in crate::config::instance::list(app).map_err(std::io::Error::other)?.instances {
-        let item = tauri::menu::MenuItem::with_id(app, format!("native-instance:{}", instance.id), &instance.name, true, None::<&str>)?;
+    for instance in crate::config::instance::list(app)
+        .map_err(std::io::Error::other)?
+        .instances
+    {
+        let item = tauri::menu::MenuItem::with_id(
+            app,
+            format!("native-instance:{}", instance.id),
+            &instance.name,
+            true,
+            None::<&str>,
+        )?;
         menu.append(&item)?;
     }
     menu.append(&quit)?;
@@ -130,13 +160,22 @@ pub fn tray(app: &tauri::AppHandle<Wry>) -> tauri::Result<()> {
                 let id = id.to_string();
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
-                    let result = if crate::bridge::cmd::list_running_instances().unwrap_or_default().contains(&id) {
+                    let result = if crate::bridge::cmd::list_running_instances()
+                        .unwrap_or_default()
+                        .contains(&id)
+                    {
                         crate::bridge::cmd::focus_instance_window(id)
                     } else {
-                        crate::bridge::cmd::launch_instance_window(app.clone(), id, None, None).await.map(|_| ())
+                        crate::bridge::cmd::launch_instance_window(app.clone(), id, None, None)
+                            .await
+                            .map(|_| ())
                     };
                     if let Err(error) = result {
-                        rfd::AsyncMessageDialog::new().set_title("DSH Launcher").set_description(&error).show().await;
+                        rfd::AsyncMessageDialog::new()
+                            .set_title("DSH Launcher")
+                            .set_description(&error)
+                            .show()
+                            .await;
                     }
                 });
             } else {
@@ -145,7 +184,14 @@ pub fn tray(app: &tauri::AppHandle<Wry>) -> tauri::Result<()> {
                     let _ = window.unminimize();
                     let _ = window.set_focus();
                 }
-                let _ = app.emit(if event.id.as_ref() == "native-settings" { "tray-open-settings" } else { "tray-open-launcher" }, ());
+                let _ = app.emit(
+                    if event.id.as_ref() == "native-settings" {
+                        "tray-open-settings"
+                    } else {
+                        "tray-open-launcher"
+                    },
+                    (),
+                );
             }
         })
         .show_menu_on_left_click(false)
@@ -280,7 +326,10 @@ pub fn build_instance_window(
     // DSH resolves its locale from the browser environment. Keep newly created
     // instance WebViews aligned with the launcher's persisted language without
     // changing DSH's own routes or configuration contract.
-    let dsh_language = if crate::config::get_store_dat_setting(app).language.starts_with("en") {
+    let dsh_language = if crate::config::get_store_dat_setting(app)
+        .language
+        .starts_with("en")
+    {
         "en-US"
     } else {
         "zh-CN"
@@ -345,6 +394,8 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::cmd::list_dsh_runtimes,
         crate::bridge::cmd::choose_dsh_runtime_path,
         crate::bridge::cmd::add_custom_dsh_runtime,
+        crate::bridge::cmd::install_dsh_version,
+        crate::bridge::cmd::list_npm_dsh_versions,
         crate::bridge::cmd::remove_custom_dsh_runtime,
         crate::bridge::cmd::select_dsh_runtime,
         crate::bridge::cmd::update_active_dsh_runtime,
@@ -372,6 +423,7 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::cmd::create_instance,
         crate::bridge::cmd::update_instance,
         crate::bridge::cmd::select_instance,
+        crate::bridge::cmd::reorder_instances,
         crate::bridge::cmd::remove_instance,
         crate::bridge::cmd::remove_instance_registry_only,
         crate::bridge::cmd::get_instance_removal_impact,
@@ -391,6 +443,8 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::cmd::cancel_plugin_install,
         crate::bridge::cmd::get_dsh_plugins,
         crate::bridge::cmd::get_dsh_plugins_for_instance,
+        crate::bridge::cmd::check_plugin_updates_for_instance,
+        crate::bridge::cmd::update_plugin_for_instance,
         crate::bridge::cmd::set_plugin_enabled_for_instance,
         crate::bridge::cmd::remove_plugin_for_instance,
         crate::bridge::cmd::proxy_health_check,
@@ -467,6 +521,10 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
                     }
                     let instance = crate::config::instance::find(&app_handle, &id)
                         .map_err(std::io::Error::other)?;
+                    if let Some(runtime_id) = instance.runtime_id.as_deref() {
+                        crate::config::by_id(&app_handle, runtime_id)
+                            .map_err(std::io::Error::other)?;
+                    }
                     crate::config::instance::set_active(Some(instance.clone()));
                     tauri::async_runtime::block_on(async {
                         crate::service::workflow::start(app_handle.clone()).await

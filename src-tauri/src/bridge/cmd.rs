@@ -662,6 +662,87 @@ pub async fn add_custom_dsh_runtime(
 }
 
 #[tauri::command]
+pub async fn list_npm_dsh_versions(app_handle: AppHandle) -> Result<Vec<String>, String> {
+    ensure_launcher_update_context()?;
+    let node = config::get_node_binary_path(&app_handle);
+    let npm_cli = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|dir| dir.join("node_modules/npm/bin/npm-cli.js"))
+        .find(|candidate| candidate.is_file())
+        .ok_or_else(|| "DSH_RUNTIME_NPM_MISSING:npm CLI was not found on PATH".to_string())?;
+    let output = tokio::task::spawn_blocking(move || {
+        let mut command = std::process::Command::new(node);
+        command.arg(npm_cli).args(["view", "@deepseek-ai/dsh", "versions", "--json"]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+        command.output().map_err(|error| format!("DSH_VERSION_LIST_FAILED:{error}"))
+    }).await.map_err(|error| format!("DSH_VERSION_LIST_FAILED:{error}"))??;
+    if !output.status.success() {
+        return Err(format!("DSH_VERSION_LIST_FAILED:{}", String::from_utf8_lossy(&output.stderr).trim()));
+    }
+    let mut versions: Vec<String> = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("DSH_VERSION_LIST_FAILED:{error}"))?;
+    versions.reverse();
+    Ok(versions)
+}
+
+#[tauri::command]
+pub async fn install_dsh_version(
+    app_handle: AppHandle,
+    version: String,
+    path: String,
+) -> Result<config::DshRuntime, String> {
+    ensure_launcher_update_context()?;
+    let _guard = RuntimeMutationGuard::acquire()?;
+    let version = version.trim();
+    let core = version.split_once('-').map_or(version, |(core, _)| core);
+    if version.len() > 80 || core.split('.').count() != 3 || !core.split('.').all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit())) || !version.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+')) {
+        return Err("DSH_VERSION_INVALID:enter an exact npm version".to_string());
+    }
+    let destination = std::path::PathBuf::from(path.trim());
+    if !destination.is_absolute() || destination.parent().is_none() {
+        return Err("DSH_RUNTIME_PATH_INVALID:choose an absolute installation directory".to_string());
+    }
+    if destination.exists() {
+        if destination.symlink_metadata().map_err(|error| error.to_string())?.file_type().is_symlink() || !destination.is_dir() || destination.read_dir().map_err(|error| error.to_string())?.next().is_some() {
+            return Err("DSH_RUNTIME_PATH_IN_USE:installation directory must be empty and not a link".to_string());
+        }
+    }
+    let node = config::get_node_binary_path(&app_handle);
+    if !node.is_file() {
+        return Err("DSH_RUNTIME_NODE_MISSING:install a compatible Node.js first".to_string());
+    }
+    let npm_cli = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|dir| dir.join("node_modules/npm/bin/npm-cli.js"))
+        .find(|candidate| candidate.is_file())
+        .ok_or_else(|| "DSH_RUNTIME_NPM_MISSING:npm CLI was not found on PATH".to_string())?;
+    let destination_for_install = destination.clone();
+    let package = format!("@deepseek-ai/dsh@{version}");
+    let output = tokio::task::spawn_blocking(move || {
+        let mut command = std::process::Command::new(node);
+        command.arg(npm_cli).arg("install").arg("--prefix").arg(destination_for_install).arg("--no-save").arg("--no-audit").arg(&package);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+        command.output().map_err(|error| format!("DSH_RUNTIME_INSTALL_FAILED:{error}"))
+    }).await.map_err(|error| format!("DSH_RUNTIME_INSTALL_FAILED:{error}"))??;
+    if !output.status.success() {
+        return Err(format!("DSH_RUNTIME_INSTALL_FAILED:{}", String::from_utf8_lossy(&output.stderr).trim()));
+    }
+    let entry = destination.join("node_modules/@deepseek-ai/dsh/lib/bin.js");
+    let package_path = destination.join("node_modules/@deepseek-ai/dsh/package.json");
+    let package: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(package_path).map_err(|error| format!("DSH_RUNTIME_INSTALL_FAILED:{error}"))?).map_err(|error| format!("DSH_RUNTIME_INSTALL_FAILED:{error}"))?;
+    if package.get("name").and_then(|value| value.as_str()) != Some("@deepseek-ai/dsh") || package.get("version").and_then(|value| value.as_str()) != Some(version) || !entry.is_file() {
+        return Err("DSH_RUNTIME_INSTALL_FAILED:installed package does not match the requested version".to_string());
+    }
+    config::add_custom(&app_handle, &format!("DSH {version}"), &entry.to_string_lossy())
+}
+
+#[tauri::command]
 pub async fn remove_custom_dsh_runtime(
     app_handle: AppHandle,
     runtime_id: String,
@@ -670,6 +751,9 @@ pub async fn remove_custom_dsh_runtime(
     let _mutation_guard = RuntimeMutationGuard::acquire()?;
     if !list_running_instances()?.is_empty() || workflow::has_owned_process() {
         return Err("DSH_RUNTIME_IN_USE:stop all instances before changing runtimes".to_string());
+    }
+    if config::instance::list(&app_handle)?.instances.iter().any(|instance| instance.runtime_id.as_deref() == Some(&runtime_id)) {
+        return Err("DSH_RUNTIME_IN_USE:an instance is bound to this version".to_string());
     }
     config::remove_custom(&app_handle, &runtime_id)
 }
@@ -807,10 +891,14 @@ pub async fn launch_instance_window(
         .cloned()
         .ok_or_else(|| format!("INSTANCE_NOT_FOUND: {id}"))?;
 
+    if let Some(runtime_id) = target.runtime_id.as_deref() {
+        config::by_id(&app_handle, runtime_id)?;
+    }
+
     // 实例宿主不负责下载运行时。首次安装仍在启动器进程完成，避免多个实例
     // 同时写入共享 dependencies 目录。
     let setting = config::get_store_dat_setting(&app_handle);
-    if !setting.installed || !runtime_ready(app_handle.clone()) {
+    if target.runtime_id.is_none() && (!setting.installed || !runtime_ready(app_handle.clone())) {
         install_dependencies(app_handle.clone()).await?;
     }
 
@@ -1304,6 +1392,9 @@ pub async fn create_instance(
     input: config::instance::CreateInstanceInput,
 ) -> Result<config::instance::DshInstance, String> {
     ensure_launcher_update_context()?;
+    if let Some(id) = input.runtime_id.as_deref() {
+        config::by_id(&app_handle, id)?;
+    }
     let _operation_guard = instance_operation_lock().lock().await;
     let home = config::instance::normalize_home_for_export(&input.dsh_home)?;
     for instance in config::instance::list(&app_handle)?.instances {
@@ -1357,6 +1448,17 @@ pub async fn select_instance(
         return Err("INSTANCE_RUNNING: stop the current instance before switching".to_string());
     }
     config::instance::select(&app_handle, &id)
+}
+
+#[tauri::command]
+pub async fn reorder_instances(
+    app_handle: AppHandle,
+    from_id: String,
+    to_id: String,
+) -> Result<config::instance::InstanceRegistry, String> {
+    ensure_launcher_update_context()?;
+    let _operation_guard = instance_operation_lock().lock().await;
+    config::instance::reorder(&app_handle, &from_id, &to_id)
 }
 
 #[tauri::command]
@@ -1748,6 +1850,40 @@ pub async fn get_dsh_plugins_for_instance(
     let plugins = plugin::watch::list(&app_handle);
     config::instance::set_active(previous);
     Ok(plugins)
+}
+
+/// 检查指定实例 Profile 中直接依赖插件的可用更新。
+#[tauri::command]
+pub async fn check_plugin_updates_for_instance(
+    app_handle: AppHandle,
+    instance_id: String,
+) -> Result<Vec<plugin::update::PluginUpdateInfo>, String> {
+    ensure_launcher_update_context()?;
+    let target = config::instance::find(&app_handle, &instance_id)?;
+    let profile = target.dsh_home.join("profiles").join(target.profile);
+    plugin::update::check_profile(&profile).await
+}
+
+/// 按后端重新核对的目标更新一个插件；更新期间相关 Home 必须停止。
+#[tauri::command]
+pub async fn update_plugin_for_instance(
+    app_handle: AppHandle,
+    instance_id: String,
+    intent: plugin::update::PluginUpdateIntent,
+) -> Result<plugin::update::PluginUpdateResult, String> {
+    let _runtime_guard = RuntimeUseGuard::acquire()?;
+    ensure_launcher_update_context()?;
+    let target = config::instance::find(&app_handle, &instance_id)?;
+    if let Some(running) = instance_home_is_running(&app_handle, &target)? {
+        return Err(format!("INSTANCE_RUNNING:{}:{}", running.id, running.name));
+    }
+    plugin::reset_cancel();
+    let _operation_guard = instance_operation_lock().lock().await;
+    let previous = config::instance::active();
+    config::instance::set_active(Some(target));
+    let result = plugin::update::apply(&app_handle, &intent).await;
+    config::instance::set_active(previous);
+    result
 }
 
 /// 设置指定实例 Profile 中插件的启动加载状态。

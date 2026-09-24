@@ -1301,8 +1301,12 @@ async fn authenticated_web_ready(client: &reqwest::Client, url: &str) -> bool {
     if response.status().is_success() {
         return true;
     }
+    let location = response.headers().get(reqwest::header::LOCATION)
+        .and_then(|value| value.to_str().ok());
+    // DSH 0.1.7-rc.1 redirects to `./`; earlier builds used `/`.
+    // Accept only these same-origin root paths before forwarding the session cookie.
     if response.status() != reqwest::StatusCode::SEE_OTHER
-        || response.headers().get(reqwest::header::LOCATION).and_then(|v| v.to_str().ok()) != Some("/")
+        || !matches!(location, Some("/" | "./"))
     {
         return false;
     }
@@ -1326,8 +1330,10 @@ mod tests {
     #[tokio::test]
     async fn readiness_exchanges_launch_token_for_cookie() {
         use std::io::{Read, Write};
+        for location in ["/", "./"] {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
+        let location = location.to_string();
         let server = std::thread::spawn(move || {
             for step in 0..2 {
                 let (mut stream, _) = listener.accept().unwrap();
@@ -1337,7 +1343,7 @@ mod tests {
                 let request = String::from_utf8_lossy(&buffer[..count]).to_lowercase();
                 if step == 0 {
                     assert!(request.starts_with("get /?token=test "));
-                    stream.write_all(b"HTTP/1.1 303 See Other\r\nLocation: /\r\nSet-Cookie: session=valid; HttpOnly\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                    stream.write_all(format!("HTTP/1.1 303 See Other\r\nLocation: {location}\r\nSet-Cookie: session=valid; HttpOnly\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
                 } else {
                     assert!(request.starts_with("get / "));
                     assert!(request.contains("cookie: session=valid"));
@@ -1350,6 +1356,7 @@ mod tests {
             .timeout(std::time::Duration::from_secs(3)).build().unwrap();
         assert!(authenticated_web_ready(&client, &format!("http://{addr}/?token=test")).await);
         server.join().unwrap();
+        }
     }
     use std::net::TcpListener;
 
